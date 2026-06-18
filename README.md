@@ -1,10 +1,10 @@
 # Restaurant Time Clock
 
-A phone-friendly web app for restaurant staff to clock in and out with a PIN and finger signature. Managers can set employee wages, review hours, and export payroll CSV files.
+A phone-friendly web app for restaurant staff to clock in and out with a PIN. Managers can set employee wages, review hours, and export payroll CSV files.
 
 ## What it does
 
-- Staff choose their name, enter their PIN, sign, then clock in or out.
+- Staff choose their name, enter their PIN, then clock in or out.
 - Each shift stores the employee wage at the time they clocked in.
 - Admin can add, edit, enable, or disable employees.
 - Admin can review payroll by date range.
@@ -49,6 +49,6 @@ Use full phone numbers with country code, for example `+14165551234`.
 
 ## Important note about shared records
 
-This first version stores records in the browser on the device being used. That is fine if the restaurant uses one shared tablet or phone as the time clock.
+This version still stores records in the browser on the device being used.
 
-If every employee uses their own phone and all records need to sync together, the app should be connected to a cloud database and login system. Good next-step options are Firebase, Supabase, or a small custom server.
+For real restaurant use where every employee uses their own phone and records need to sync together, the app should be connected to a cloud database and login system. Good next-step options are Firebase, Supabase, or a small custom server.

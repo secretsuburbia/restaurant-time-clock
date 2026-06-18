@@ -3,8 +3,6 @@ const storageKey = "restaurant-time-clock-v1";
 let state = loadState();
 let selectedEmployeeId = "";
 let deferredInstallPrompt = null;
-let hasSignature = false;
-let drawing = false;
 
 const els = {
   restaurantName: document.querySelector("#restaurantName"),
@@ -13,8 +11,6 @@ const els = {
   employeeSelect: document.querySelector("#employeeSelect"),
   employeePin: document.querySelector("#employeePin"),
   employeeState: document.querySelector("#employeeState"),
-  signaturePad: document.querySelector("#signaturePad"),
-  clearSignature: document.querySelector("#clearSignature"),
   clockAction: document.querySelector("#clockAction"),
   message: document.querySelector("#message"),
   todayRows: document.querySelector("#todayRows"),
@@ -225,19 +221,13 @@ async function clockAction() {
     setMessage("That PIN does not match this employee.", "error");
     return;
   }
-  if (!hasSignature) {
-    setMessage("Please sign before clocking in or out.", "error");
-    return;
-  }
 
   const now = new Date().toISOString();
-  const signature = els.signaturePad.toDataURL("image/png");
   const openShift = getOpenShift(employee.id);
   const action = openShift ? "clocked out" : "clocked in";
 
   if (openShift) {
     openShift.clockOut = now;
-    openShift.clockOutSignature = signature;
     setMessage(`${employee.name} clocked out at ${displayTime(now)}.`, "ok");
   } else {
     state.shifts.push({
@@ -246,15 +236,12 @@ async function clockAction() {
       employeeName: employee.name,
       wageAtClockIn: Number(employee.wage),
       clockIn: now,
-      clockInSignature: signature,
-      clockOut: null,
-      clockOutSignature: null
+      clockOut: null
     });
     setMessage(`${employee.name} clocked in at ${displayTime(now)}.`, "ok");
   }
 
   els.employeePin.value = "";
-  clearSignature();
   saveState();
   render();
   await sendShiftText({
@@ -343,46 +330,6 @@ function exportCsv(shifts, fileName) {
   URL.revokeObjectURL(url);
 }
 
-function clearSignature() {
-  const context = els.signaturePad.getContext("2d");
-  context.clearRect(0, 0, els.signaturePad.width, els.signaturePad.height);
-  hasSignature = false;
-}
-
-function canvasPoint(event) {
-  const rect = els.signaturePad.getBoundingClientRect();
-  const touch = event.touches?.[0] || event;
-  return {
-    x: (touch.clientX - rect.left) * (els.signaturePad.width / rect.width),
-    y: (touch.clientY - rect.top) * (els.signaturePad.height / rect.height)
-  };
-}
-
-function startDrawing(event) {
-  drawing = true;
-  hasSignature = true;
-  const point = canvasPoint(event);
-  const context = els.signaturePad.getContext("2d");
-  context.beginPath();
-  context.moveTo(point.x, point.y);
-}
-
-function draw(event) {
-  if (!drawing) return;
-  event.preventDefault();
-  const point = canvasPoint(event);
-  const context = els.signaturePad.getContext("2d");
-  context.lineWidth = 4;
-  context.lineCap = "round";
-  context.strokeStyle = "#17211f";
-  context.lineTo(point.x, point.y);
-  context.stroke();
-}
-
-function stopDrawing() {
-  drawing = false;
-}
-
 function startOfToday() {
   const date = new Date();
   date.setHours(0, 0, 0, 0);
@@ -420,13 +367,11 @@ function escapeHtml(value) {
 els.employeeSelect.addEventListener("change", () => {
   selectedEmployeeId = els.employeeSelect.value;
   els.employeePin.value = "";
-  clearSignature();
   setMessage("");
   render();
 });
 
 els.clockAction.addEventListener("click", clockAction);
-els.clearSignature.addEventListener("click", clearSignature);
 els.employeeForm.addEventListener("submit", saveEmployee);
 
 els.employeeList.addEventListener("click", (event) => {
@@ -505,10 +450,6 @@ els.saveSettings.addEventListener("click", () => {
   render();
 });
 
-["mousedown", "touchstart"].forEach((name) => els.signaturePad.addEventListener(name, startDrawing));
-["mousemove", "touchmove"].forEach((name) => els.signaturePad.addEventListener(name, draw, { passive: false }));
-["mouseup", "mouseleave", "touchend", "touchcancel"].forEach((name) => els.signaturePad.addEventListener(name, stopDrawing));
-
 window.addEventListener("beforeinstallprompt", (event) => {
   event.preventDefault();
   deferredInstallPrompt = event;
@@ -539,4 +480,3 @@ if ("serviceWorker" in navigator) {
 els.fromDate.value = isoDate(startOfToday());
 els.toDate.value = isoDate(endOfToday());
 render();
-clearSignature();
