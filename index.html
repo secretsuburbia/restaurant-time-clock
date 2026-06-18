@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#0f766e">
+    <title>Restaurant Time Clock</title>
+    <link rel="manifest" href="manifest.webmanifest">
+    <link rel="stylesheet" href="styles.css?v=6">
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Staff time clock</p>
+          <h1 id="restaurantName">Restaurant Time Clock</h1>
+        </div>
+        <button class="icon-button" id="installButton" type="button" title="Install app" hidden>
+          <span aria-hidden="true">+</span>
+        </button>
+      </header>
+
+      <main>
+        <section class="status-band" aria-live="polite">
+          <div>
+            <span class="label">Current time</span>
+            <strong id="currentTime">--:--</strong>
+          </div>
+          <div>
+            <span class="label">On shift</span>
+            <strong id="activeCount">0</strong>
+          </div>
+        </section>
+
+        <section class="clock-panel">
+          <div class="section-heading">
+            <h2>Clock in or out</h2>
+            <button class="secondary" id="adminOpen" type="button">Admin</button>
+          </div>
+
+          <div class="field">
+            <label for="employeeSelect">Employee</label>
+            <select id="employeeSelect"></select>
+          </div>
+
+          <div class="pin-row">
+            <div class="field pin-field">
+              <label for="employeePin">PIN</label>
+              <input id="employeePin" inputmode="numeric" autocomplete="off" placeholder="4 digits" type="password">
+            </div>
+            <div class="employee-state" id="employeeState">Select your name</div>
+          </div>
+
+          <div class="signature-block">
+            <div class="signature-top">
+              <label for="signaturePad">Signature</label>
+              <button class="text-button" id="clearSignature" type="button">Clear</button>
+            </div>
+            <canvas id="signaturePad" width="720" height="240" aria-label="Signature pad"></canvas>
+          </div>
+
+          <button class="primary action-button" id="clockAction" type="button">Clock in</button>
+          <p class="message" id="message"></p>
+        </section>
+
+        <section class="activity-panel">
+          <div class="section-heading">
+            <h2>Today</h2>
+            <button class="secondary" id="exportToday" type="button">Export CSV</button>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Employee</th>
+                  <th>In</th>
+                  <th>Out</th>
+                  <th>Hours</th>
+                  <th>Pay</th>
+                </tr>
+              </thead>
+              <tbody id="todayRows"></tbody>
+            </table>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <dialog id="adminDialog">
+      <div class="dialog-shell">
+        <div class="dialog-header">
+          <div>
+            <p class="eyebrow">Manager area</p>
+            <h2>Admin</h2>
+          </div>
+          <button class="icon-button" id="adminClose" title="Close" type="button">x</button>
+        </div>
+
+        <div id="adminLock" class="lock-panel">
+          <label for="adminPin">Admin PIN</label>
+          <input id="adminPin" inputmode="numeric" type="password" placeholder="Default: 1234">
+          <button class="primary" id="unlockAdmin" type="button">Unlock</button>
+        </div>
+
+        <div id="adminContent" hidden>
+          <div class="tabs" role="tablist" aria-label="Admin views">
+            <button class="tab active" data-tab="employees" type="button">Employees</button>
+            <button class="tab" data-tab="payroll" type="button">Payroll</button>
+            <button class="tab" data-tab="settings" type="button">Settings</button>
+          </div>
+
+          <section class="tab-panel" id="employeesPanel">
+            <form id="employeeForm" class="grid-form">
+              <input type="hidden" id="employeeId">
+              <div class="field">
+                <label for="employeeName">Name</label>
+                <input id="employeeName" required>
+              </div>
+              <div class="field">
+                <label for="employeeWage">Hourly wage</label>
+                <input id="employeeWage" inputmode="decimal" min="0" step="0.01" type="number" required>
+              </div>
+              <div class="field">
+                <label for="employeeFormPin">Employee PIN</label>
+                <input id="employeeFormPin" inputmode="numeric" maxlength="8" required>
+              </div>
+              <button class="primary" type="submit">Save employee</button>
+            </form>
+            <div class="employee-list" id="employeeList"></div>
+          </section>
+
+          <section class="tab-panel" id="payrollPanel" hidden>
+            <div class="date-grid">
+              <div class="field">
+                <label for="fromDate">From</label>
+                <input id="fromDate" type="date">
+              </div>
+              <div class="field">
+                <label for="toDate">To</label>
+                <input id="toDate" type="date">
+              </div>
+              <button class="secondary" id="exportPayroll" type="button">Export CSV</button>
+            </div>
+            <div class="summary-grid" id="payrollSummary"></div>
+          </section>
+
+          <section class="tab-panel" id="settingsPanel" hidden>
+            <div class="field">
+              <label for="restaurantInput">Restaurant name</label>
+              <input id="restaurantInput">
+            </div>
+            <div class="field">
+              <label for="adminPinChange">Change admin PIN</label>
+              <input id="adminPinChange" inputmode="numeric" type="password" placeholder="Leave blank to keep current">
+            </div>
+            <button class="primary" id="saveSettings" type="button">Save settings</button>
+            <p class="hint">Records are stored on this device. Use CSV export for payroll backup.</p>
+          </section>
+        </div>
+      </div>
+    </dialog>
+
+    <script src="app.js?v=6"></script>
+  </body>
+</html>
