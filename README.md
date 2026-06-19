@@ -10,6 +10,7 @@ A phone-friendly web app for restaurant staff to clock in and out with a PIN. Ma
 - Admin can review payroll by date range.
 - Payroll and daily shift records can be exported as CSV.
 - A manager can receive a text message when someone clocks in or out.
+- Shared restaurant records are stored through Netlify Functions and Netlify Blobs so multiple phones can use the same time clock.
 - The app can be installed to a phone home screen when hosted on HTTPS or opened from localhost.
 
 ## First login
@@ -49,6 +50,8 @@ Use full phone numbers with country code, for example `+14165551234`.
 
 ## Important note about shared records
 
-This version still stores records in the browser on the device being used.
+This version stores shared records in Netlify Blobs through `netlify/functions/time-clock-data.js`.
 
-For real restaurant use where every employee uses their own phone and records need to sync together, the app should be connected to a cloud database and login system. Good next-step options are Firebase, Supabase, or a small custom server.
+Each phone keeps a local backup copy in the browser, but the live Netlify site loads and saves the central restaurant record when employees clock in/out or when managers change employees/settings.
+
+The next hardening step is proper manager/employee authentication so wages, PINs, and payroll data are not sent to ordinary staff browsers.

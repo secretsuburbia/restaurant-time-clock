@@ -1,8 +1,10 @@
 const storageKey = "restaurant-time-clock-v1";
+const dataFunctionUrl = "/.netlify/functions/time-clock-data";
 
 let state = loadState();
 let selectedEmployeeId = "";
 let deferredInstallPrompt = null;
+let syncTimer = null;
 
 const els = {
   restaurantName: document.querySelector("#restaurantName"),
@@ -58,6 +60,10 @@ function createDefaultState() {
   };
 }
 
+function canUseCloudData() {
+  return Boolean(location.hostname) && location.protocol !== "file:";
+}
+
 function loadState() {
   const saved = localStorage.getItem(storageKey);
   if (!saved) return createDefaultState();
@@ -70,6 +76,46 @@ function loadState() {
 
 function saveState() {
   localStorage.setItem(storageKey, JSON.stringify(state));
+}
+
+async function loadSharedState(showMessage = false) {
+  if (!canUseCloudData()) return false;
+
+  try {
+    const response = await fetch(dataFunctionUrl, { headers: { "Accept": "application/json" } });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+    state = await response.json();
+    saveState();
+    if (!getEmployee(selectedEmployeeId)) {
+      selectedEmployeeId = state.employees.find((employee) => employee.active)?.id || "";
+    }
+    render();
+    if (showMessage) setMessage("Shared restaurant records loaded.", "ok");
+    return true;
+  } catch {
+    if (showMessage) setMessage("Could not load shared records. This phone is showing its saved copy.", "error");
+    return false;
+  }
+}
+
+async function saveSharedState() {
+  saveState();
+  if (!canUseCloudData()) return true;
+
+  try {
+    const response = await fetch(dataFunctionUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ state })
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    state = await response.json();
+    saveState();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function money(value) {
@@ -212,6 +258,8 @@ function renderPayroll() {
 }
 
 async function clockAction() {
+  await loadSharedState();
+
   const employee = getEmployee(selectedEmployeeId);
   if (!employee) {
     setMessage("Add an employee first.", "error");
@@ -242,8 +290,12 @@ async function clockAction() {
   }
 
   els.employeePin.value = "";
-  saveState();
+  const savedShared = await saveSharedState();
   render();
+  if (!savedShared) {
+    setMessage(`${employee.name} ${action} at ${displayTime(now)}. Saved on this phone only.`, "error");
+    return;
+  }
   await sendShiftText({
     employeeName: employee.name,
     action,
@@ -281,7 +333,7 @@ async function sendShiftText(event) {
   }
 }
 
-function saveEmployee(event) {
+async function saveEmployee(event) {
   event.preventDefault();
   const id = els.employeeId.value || newId();
   const existing = getEmployee(id);
@@ -301,8 +353,9 @@ function saveEmployee(event) {
   els.employeeForm.reset();
   els.employeeId.value = "";
   selectedEmployeeId = selectedEmployeeId || id;
-  saveState();
+  const savedShared = await saveSharedState();
   render();
+  if (!savedShared) setMessage("Employee saved on this phone only. Shared records could not be updated.", "error");
 }
 
 function exportCsv(shifts, fileName) {
@@ -390,7 +443,9 @@ els.employeeList.addEventListener("click", (event) => {
     state.employees = state.employees.map((employee) =>
       employee.id === toggleId ? { ...employee, active: !employee.active } : employee
     );
-    saveState();
+    saveSharedState().then((savedShared) => {
+      if (!savedShared) setMessage("Employee change saved on this phone only. Shared records could not be updated.", "error");
+    });
     render();
   }
 });
@@ -440,14 +495,15 @@ els.exportPayroll.addEventListener("click", () => {
   exportCsv(shiftsInRange(from, to), `payroll-${from}-to-${to}.csv`);
 });
 
-els.saveSettings.addEventListener("click", () => {
+els.saveSettings.addEventListener("click", async () => {
   state.settings.restaurantName = els.restaurantInput.value.trim() || "Restaurant Time Clock";
   if (els.adminPinChange.value.trim()) {
     state.settings.adminPin = els.adminPinChange.value.trim();
     els.adminPinChange.value = "";
   }
-  saveState();
+  const savedShared = await saveSharedState();
   render();
+  setMessage(savedShared ? "Settings saved to shared records." : "Settings saved on this phone only.", savedShared ? "ok" : "error");
 });
 
 window.addEventListener("beforeinstallprompt", (event) => {
@@ -480,3 +536,9 @@ if ("serviceWorker" in navigator) {
 els.fromDate.value = isoDate(startOfToday());
 els.toDate.value = isoDate(endOfToday());
 render();
+loadSharedState(true);
+if (canUseCloudData()) {
+  syncTimer = setInterval(() => {
+    if (!els.adminDialog.open) loadSharedState();
+  }, 15000);
+}
