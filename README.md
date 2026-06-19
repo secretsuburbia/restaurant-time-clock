@@ -54,4 +54,6 @@ This version stores shared records in Netlify Blobs through `netlify/functions/t
 
 Each phone keeps a local backup copy in the browser, but the live Netlify site loads and saves the central restaurant record when employees clock in/out or when managers change employees/settings.
 
-The next hardening step is proper manager/employee authentication so wages, PINs, and payroll data are not sent to ordinary staff browsers.
+Staff browsers only receive employee names, clock status, and shift times. Employee PINs, wages, payroll values, and manager-only changes are handled by the Netlify Function after the manager PIN or employee PIN is submitted.
+
+The next hardening step is replacing the shared manager PIN with individual manager accounts and an audit trail for edits.

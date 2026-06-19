@@ -5,6 +5,7 @@ let state = loadState();
 let selectedEmployeeId = "";
 let deferredInstallPrompt = null;
 let syncTimer = null;
+let managerPin = "";
 
 const els = {
   restaurantName: document.querySelector("#restaurantName"),
@@ -99,22 +100,19 @@ async function loadSharedState(showMessage = false) {
   }
 }
 
-async function saveSharedState() {
-  saveState();
+async function postData(payload) {
   if (!canUseCloudData()) return true;
 
   try {
     const response = await fetch(dataFunctionUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ state })
+      body: JSON.stringify(payload)
     });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    state = await response.json();
-    saveState();
-    return true;
+    return await response.json();
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -265,49 +263,84 @@ async function clockAction() {
     setMessage("Add an employee first.", "error");
     return;
   }
-  if (els.employeePin.value.trim() !== employee.pin) {
-    setMessage("That PIN does not match this employee.", "error");
+  if (!els.employeePin.value.trim()) {
+    setMessage("Enter your PIN first.", "error");
+    return;
+  }
+  setMessage("Checking PIN...", "ok");
+
+  if (!canUseCloudData()) {
+    setMessage("Shared records are only available on the live Netlify app.", "error");
     return;
   }
 
-  const now = new Date().toISOString();
-  const openShift = getOpenShift(employee.id);
-  const action = openShift ? "clocked out" : "clocked in";
-
-  if (openShift) {
-    openShift.clockOut = now;
-    setMessage(`${employee.name} clocked out at ${displayTime(now)}.`, "ok");
-  } else {
-    state.shifts.push({
-      id: newId(),
-      employeeId: employee.id,
-      employeeName: employee.name,
-      wageAtClockIn: Number(employee.wage),
-      clockIn: now,
-      clockOut: null
-    });
-    setMessage(`${employee.name} clocked in at ${displayTime(now)}.`, "ok");
-  }
-
-  els.employeePin.value = "";
-  const savedShared = await saveSharedState();
-  render();
-  if (!savedShared) {
-    setMessage(`${employee.name} ${action} at ${displayTime(now)}. Saved on this phone only.`, "error");
-    return;
-  }
-  await sendShiftText({
-    employeeName: employee.name,
-    action,
-    time: now,
-    timeText: new Date(now).toLocaleString([], {
-      month: "short",
-      day: "numeric",
-      hour: "numeric",
-      minute: "2-digit"
-    }),
-    restaurantName: state.settings.restaurantName
+  const result = await postData({
+    action: "clock",
+    employeeId: employee.id,
+    pin: els.employeePin.value.trim()
   });
+
+  if (!result?.state || !result?.event) {
+    setMessage("Clock action failed. Please check the PIN and try again.", "error");
+    return;
+  }
+
+  state = result.state;
+  selectedEmployeeId = employee.id;
+  els.employeePin.value = "";
+  saveState();
+  render();
+
+  const textStatus = result.event.textSent ? " Text sent." : result.event.textError ? ` Text alert failed. ${result.event.textError}.` : "";
+  setMessage(`${result.event.employeeName} ${result.event.action} at ${displayTime(result.event.time)}.${textStatus}`, result.event.textSent ? "ok" : "error");
+}
+
+async function loadAdminState(pin) {
+  if (!canUseCloudData()) return false;
+  const result = await postData({ action: "admin-load", adminPin: pin });
+  if (!result?.employees) {
+    setMessage("Manager PIN does not match.", "error");
+    return false;
+  }
+  managerPin = pin;
+  state = result;
+  saveState();
+  render();
+  return true;
+}
+
+async function saveEmployeeToCloud(record) {
+  const result = await postData({ action: "save-employee", adminPin: managerPin, employee: record });
+  if (!result?.employees) {
+    setMessage("Employee was not saved. Please unlock admin again.", "error");
+    return;
+  }
+  state = result;
+  saveState();
+  render();
+}
+
+async function toggleEmployeeInCloud(employeeId) {
+  const result = await postData({ action: "toggle-employee", adminPin: managerPin, employeeId });
+  if (!result?.employees) {
+    setMessage("Employee status was not saved. Please unlock admin again.", "error");
+    return;
+  }
+  state = result;
+  saveState();
+  render();
+}
+
+async function saveSettingsToCloud(settings) {
+  const result = await postData({ action: "save-settings", adminPin: managerPin, settings });
+  if (!result?.employees) {
+    setMessage("Settings were not saved. Please unlock admin again.", "error");
+    return false;
+  }
+  state = result;
+  saveState();
+  render();
+  return true;
 }
 
 async function sendShiftText(event) {
@@ -346,16 +379,10 @@ async function saveEmployee(event) {
   };
 
   if (!record.name || Number.isNaN(record.wage) || !record.pin) return;
-  state.employees = existing
-    ? state.employees.map((employee) => employee.id === id ? record : employee)
-    : [...state.employees, record];
-
   els.employeeForm.reset();
   els.employeeId.value = "";
   selectedEmployeeId = selectedEmployeeId || id;
-  const savedShared = await saveSharedState();
-  render();
-  if (!savedShared) setMessage("Employee saved on this phone only. Shared records could not be updated.", "error");
+  await saveEmployeeToCloud(record);
 }
 
 function exportCsv(shifts, fileName) {
@@ -440,13 +467,7 @@ els.employeeList.addEventListener("click", (event) => {
   }
 
   if (toggleId) {
-    state.employees = state.employees.map((employee) =>
-      employee.id === toggleId ? { ...employee, active: !employee.active } : employee
-    );
-    saveSharedState().then((savedShared) => {
-      if (!savedShared) setMessage("Employee change saved on this phone only. Shared records could not be updated.", "error");
-    });
-    render();
+    toggleEmployeeInCloud(toggleId);
   }
 });
 
@@ -461,8 +482,9 @@ els.adminClose.addEventListener("click", () => {
   els.adminDialog.close();
 });
 
-els.unlockAdmin.addEventListener("click", () => {
-  if (els.adminPin.value !== state.settings.adminPin) return;
+els.unlockAdmin.addEventListener("click", async () => {
+  const unlocked = await loadAdminState(els.adminPin.value);
+  if (!unlocked) return;
   els.adminLock.hidden = true;
   els.adminContent.hidden = false;
   els.restaurantInput.value = state.settings.restaurantName;
@@ -496,14 +518,15 @@ els.exportPayroll.addEventListener("click", () => {
 });
 
 els.saveSettings.addEventListener("click", async () => {
-  state.settings.restaurantName = els.restaurantInput.value.trim() || "Restaurant Time Clock";
+  const settings = {
+    restaurantName: els.restaurantInput.value.trim() || "Restaurant Time Clock"
+  };
   if (els.adminPinChange.value.trim()) {
-    state.settings.adminPin = els.adminPinChange.value.trim();
+    settings.adminPin = els.adminPinChange.value.trim();
     els.adminPinChange.value = "";
   }
-  const savedShared = await saveSharedState();
-  render();
-  setMessage(savedShared ? "Settings saved to shared records." : "Settings saved on this phone only.", savedShared ? "ok" : "error");
+  const savedShared = await saveSettingsToCloud(settings);
+  setMessage(savedShared ? "Settings saved to shared records." : "Settings were not saved.", savedShared ? "ok" : "error");
 });
 
 window.addEventListener("beforeinstallprompt", (event) => {
