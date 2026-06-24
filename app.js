@@ -35,6 +35,7 @@ const els = {
   toDate: document.querySelector("#toDate"),
   payrollSummary: document.querySelector("#payrollSummary"),
   payrollReport: document.querySelector("#payrollReport"),
+  correctionList: document.querySelector("#correctionList"),
   exportPayroll: document.querySelector("#exportPayroll"),
   emailPayroll: document.querySelector("#emailPayroll"),
   printPayroll: document.querySelector("#printPayroll"),
@@ -272,8 +273,37 @@ function renderPayroll() {
     : `<p class="hint">No shifts in this date range.</p>`;
 
   renderPayrollReport(report);
+  renderShiftCorrections(report);
 }
 
+function renderShiftCorrections(report) {
+  if (!els.correctionList) return;
+
+  els.correctionList.innerHTML = report.shifts.length
+    ? report.shifts.map((shift) => `
+      <div class="correction-item" data-shift-id="${escapeHtml(shift.id)}">
+        <div>
+          <strong>${escapeHtml(shift.employeeName || getEmployee(shift.employeeId)?.name || "Unknown")}</strong>
+          <div class="hint">${displayHours(shiftHours(shift))} hours</div>
+        </div>
+        <div class="correction-fields">
+          <label>
+            In
+            <input type="datetime-local" data-correction-in value="${toDateTimeLocal(shift.clockIn)}">
+          </label>
+          <label>
+            Out
+            <input type="datetime-local" data-correction-out value="${shift.clockOut ? toDateTimeLocal(shift.clockOut) : ""}">
+          </label>
+        </div>
+        <div class="employee-actions correction-actions">
+          <button class="secondary" type="button" data-save-shift="${escapeHtml(shift.id)}">Save</button>
+          <button class="secondary danger" type="button" data-delete-shift="${escapeHtml(shift.id)}">Delete</button>
+        </div>
+      </div>
+    `).join("")
+    : `<p class="hint">No shifts to correct in this date range.</p>`;
+}
 function renderPayrollReport(report) {
   const range = `${formatDate(report.from)} to ${formatDate(report.to)}`;
   const summaryRows = report.rows.length
@@ -405,6 +435,29 @@ async function toggleEmployeeInCloud(employeeId) {
   render();
 }
 
+async function updateShiftInCloud(shift) {
+  const result = await postData({ action: "update-shift", adminPin: managerPin, shift });
+  if (!result?.employees) {
+    setMessage("Shift correction was not saved. Please unlock admin again.", "error");
+    return;
+  }
+  state = result;
+  saveState();
+  render();
+  setMessage("Shift correction saved.", "ok");
+}
+
+async function deleteShiftInCloud(shiftId) {
+  const result = await postData({ action: "delete-shift", adminPin: managerPin, shiftId });
+  if (!result?.employees) {
+    setMessage("Shift was not deleted. Please unlock admin again.", "error");
+    return;
+  }
+  state = result;
+  saveState();
+  render();
+  setMessage("Shift deleted.", "ok");
+}
 async function saveSettingsToCloud(settings) {
   const result = await postData({ action: "save-settings", adminPin: managerPin, settings });
   if (!result?.employees) {
@@ -502,6 +555,16 @@ function isoDate(date) {
 
 function formatDate(date) {
   return date.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
+}
+
+function toDateTimeLocal(value) {
+  const date = new Date(value);
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+  return local.toISOString().slice(0, 16);
+}
+
+function fromDateTimeLocal(value) {
+  return value ? new Date(value).toISOString() : null;
 }
 
 function buildPayrollEmail(report) {
@@ -618,6 +681,33 @@ document.querySelectorAll(".tab").forEach((button) => {
 els.fromDate.addEventListener("change", renderPayroll);
 els.toDate.addEventListener("change", renderPayroll);
 
+els.correctionList?.addEventListener("click", async (event) => {
+  const saveId = event.target.dataset.saveShift;
+  const deleteId = event.target.dataset.deleteShift;
+
+  if (saveId) {
+    const item = event.target.closest(".correction-item");
+    const clockIn = fromDateTimeLocal(item.querySelector("[data-correction-in]").value);
+    const clockOut = fromDateTimeLocal(item.querySelector("[data-correction-out]").value);
+
+    if (!clockIn) {
+      setMessage("Clock-in time is required.", "error");
+      return;
+    }
+    if (clockOut && new Date(clockOut) < new Date(clockIn)) {
+      setMessage("Clock-out cannot be before clock-in.", "error");
+      return;
+    }
+
+    await updateShiftInCloud({ id: saveId, clockIn, clockOut });
+  }
+
+  if (deleteId) {
+    const confirmed = confirm("Delete this shift record? This cannot be undone.");
+    if (!confirmed) return;
+    await deleteShiftInCloud(deleteId);
+  }
+});
 els.exportToday.addEventListener("click", () => {
   const today = isoDate(startOfToday());
   exportCsv(shiftsInRange(today, today), `time-clock-${today}.csv`);

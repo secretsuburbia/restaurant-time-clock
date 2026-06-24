@@ -611,3 +611,67 @@ dialog::backdrop {
     white-space: normal;
   }
 }
+.correction-panel {
+  margin-top: 18px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fbfdfc;
+}
+
+.correction-panel .section-heading {
+  align-items: baseline;
+}
+
+.correction-panel h3 {
+  margin: 0;
+}
+
+.correction-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.correction-item {
+  display: grid;
+  grid-template-columns: minmax(140px, 0.7fr) minmax(0, 1.4fr) auto;
+  gap: 12px;
+  align-items: end;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+}
+
+.correction-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.correction-fields label {
+  display: grid;
+  gap: 6px;
+}
+
+.correction-actions {
+  align-self: center;
+}
+
+@media (max-width: 720px) {
+  .correction-item,
+  .correction-fields {
+    grid-template-columns: 1fr;
+  }
+
+  .correction-actions {
+    justify-content: stretch;
+  }
+}
+
+@media print {
+  body.printing-report dialog .correction-panel {
+    display: none !important;
+  }
+}

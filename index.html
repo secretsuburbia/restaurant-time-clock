@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#0f766e">
     <title>Restaurant Time Clock</title>
     <link rel="manifest" href="manifest.webmanifest">
-    <link rel="stylesheet" href="styles.css?v=10">
+    <link rel="stylesheet" href="styles.css?v=11">
   </head>
   <body>
     <div class="app-shell">
@@ -137,6 +137,13 @@
             </div>
             <div class="summary-grid" id="payrollSummary"></div>
             <section class="report-preview" id="payrollReport" aria-label="Printable payroll report"></section>
+            <section class="correction-panel" aria-label="Manager shift corrections">
+              <div class="section-heading">
+                <h3>Shift corrections</h3>
+                <p class="hint">Fix missed clock-outs or wrong times.</p>
+              </div>
+              <div class="correction-list" id="correctionList"></div>
+            </section>
           </section>
 
           <section class="tab-panel" id="settingsPanel" hidden>
@@ -155,6 +162,6 @@
       </div>
     </dialog>
 
-    <script src="app.js?v=10"></script>
+    <script src="app.js?v=11"></script>
   </body>
 </html>
