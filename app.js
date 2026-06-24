@@ -34,7 +34,10 @@ const els = {
   fromDate: document.querySelector("#fromDate"),
   toDate: document.querySelector("#toDate"),
   payrollSummary: document.querySelector("#payrollSummary"),
+  payrollReport: document.querySelector("#payrollReport"),
   exportPayroll: document.querySelector("#exportPayroll"),
+  emailPayroll: document.querySelector("#emailPayroll"),
+  printPayroll: document.querySelector("#printPayroll"),
   restaurantInput: document.querySelector("#restaurantInput"),
   adminPinChange: document.querySelector("#adminPinChange"),
   saveSettings: document.querySelector("#saveSettings"),
@@ -218,30 +221,44 @@ function renderEmployees() {
   `).join("");
 }
 
-function renderPayroll() {
+function buildPayrollReport() {
   const from = els.fromDate.value ? new Date(`${els.fromDate.value}T00:00:00`) : startOfToday();
   const to = els.toDate.value ? new Date(`${els.toDate.value}T23:59:59`) : endOfToday();
-  const totals = new Map();
-
-  state.shifts
+  const shifts = state.shifts
     .filter((shift) => {
       const clockIn = new Date(shift.clockIn);
       return clockIn >= from && clockIn <= to;
     })
-    .forEach((shift) => {
-      const employee = getEmployee(shift.employeeId);
-      const key = shift.employeeId;
-      const current = totals.get(key) || {
-        name: employee?.name || shift.employeeName || "Unknown",
-        hours: 0,
-        pay: 0
-      };
-      current.hours += shiftHours(shift);
-      current.pay += shiftPay(shift);
-      totals.set(key, current);
-    });
+    .sort((a, b) => new Date(a.clockIn) - new Date(b.clockIn));
+  const totals = new Map();
 
-  const rows = Array.from(totals.values()).sort((a, b) => a.name.localeCompare(b.name));
+  shifts.forEach((shift) => {
+    const employee = getEmployee(shift.employeeId);
+    const key = shift.employeeId;
+    const current = totals.get(key) || {
+      name: employee?.name || shift.employeeName || "Unknown",
+      hours: 0,
+      pay: 0
+    };
+    current.hours += shiftHours(shift);
+    current.pay += shiftPay(shift);
+    totals.set(key, current);
+  });
+
+  return {
+    from,
+    to,
+    shifts,
+    rows: Array.from(totals.values()).sort((a, b) => a.name.localeCompare(b.name)),
+    totalHours: Array.from(totals.values()).reduce((sum, row) => sum + row.hours, 0),
+    totalPay: Array.from(totals.values()).reduce((sum, row) => sum + row.pay, 0)
+  };
+}
+
+function renderPayroll() {
+  const report = buildPayrollReport();
+  const rows = report.rows;
+
   els.payrollSummary.innerHTML = rows.length
     ? rows.map((row) => `
       <div class="summary-item">
@@ -253,6 +270,63 @@ function renderPayroll() {
       </div>
     `).join("")
     : `<p class="hint">No shifts in this date range.</p>`;
+
+  renderPayrollReport(report);
+}
+
+function renderPayrollReport(report) {
+  const range = `${formatDate(report.from)} to ${formatDate(report.to)}`;
+  const summaryRows = report.rows.length
+    ? report.rows.map((row) => `
+      <tr>
+        <td>${escapeHtml(row.name)}</td>
+        <td>${displayHours(row.hours)}</td>
+        <td>${money(row.pay)}</td>
+      </tr>
+    `).join("")
+    : `<tr><td colspan="3">No shifts in this date range.</td></tr>`;
+  const shiftRows = report.shifts.length
+    ? report.shifts.map((shift) => `
+      <tr>
+        <td>${escapeHtml(shift.employeeName || getEmployee(shift.employeeId)?.name || "Unknown")}</td>
+        <td>${new Date(shift.clockIn).toLocaleString()}</td>
+        <td>${shift.clockOut ? new Date(shift.clockOut).toLocaleString() : "Still working"}</td>
+        <td>${displayHours(shiftHours(shift))}</td>
+      </tr>
+    `).join("")
+    : `<tr><td colspan="4">No shift details in this date range.</td></tr>`;
+
+  els.payrollReport.innerHTML = `
+    <div class="report-title">
+      <div>
+        <p class="eyebrow">Payroll report</p>
+        <h3>${escapeHtml(state.settings.restaurantName)}</h3>
+        <p class="hint">${escapeHtml(range)}</p>
+      </div>
+      <div class="report-total">
+        <strong>${displayHours(report.totalHours)}</strong>
+        <span>Total hours</span>
+      </div>
+      <div class="report-total">
+        <strong>${money(report.totalPay)}</strong>
+        <span>Estimated pay</span>
+      </div>
+    </div>
+    <h4>Summary</h4>
+    <div class="table-wrap report-table-wrap">
+      <table>
+        <thead><tr><th>Employee</th><th>Hours</th><th>Pay</th></tr></thead>
+        <tbody>${summaryRows}</tbody>
+      </table>
+    </div>
+    <h4>Shift details</h4>
+    <div class="table-wrap report-table-wrap">
+      <table>
+        <thead><tr><th>Employee</th><th>Clock in</th><th>Clock out</th><th>Hours</th></tr></thead>
+        <tbody>${shiftRows}</tbody>
+      </table>
+    </div>
+  `;
 }
 
 async function clockAction() {
@@ -426,6 +500,44 @@ function isoDate(date) {
   return date.toISOString().slice(0, 10);
 }
 
+function formatDate(date) {
+  return date.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
+}
+
+function buildPayrollEmail(report) {
+  const lines = [
+    `${state.settings.restaurantName} payroll report`,
+    `${formatDate(report.from)} to ${formatDate(report.to)}`,
+    "",
+    `Total hours: ${displayHours(report.totalHours)}`,
+    `Estimated pay: ${money(report.totalPay)}`,
+    "",
+    "Employee summary:"
+  ];
+
+  if (report.rows.length) {
+    report.rows.forEach((row) => {
+      lines.push(`${row.name}: ${displayHours(row.hours)} hours, ${money(row.pay)}`);
+    });
+  } else {
+    lines.push("No shifts in this date range.");
+  }
+
+  lines.push("", "Shift details:");
+  if (report.shifts.length) {
+    report.shifts.forEach((shift) => {
+      const name = shift.employeeName || getEmployee(shift.employeeId)?.name || "Unknown";
+      const clockIn = new Date(shift.clockIn).toLocaleString();
+      const clockOut = shift.clockOut ? new Date(shift.clockOut).toLocaleString() : "Still working";
+      lines.push(`${name}: ${clockIn} to ${clockOut}, ${displayHours(shiftHours(shift))} hours`);
+    });
+  } else {
+    lines.push("No shift details in this date range.");
+  }
+
+  return lines.join("\n");
+}
+
 function shiftsInRange(fromDate, toDate) {
   const from = new Date(`${fromDate}T00:00:00`);
   const to = new Date(`${toDate}T23:59:59`);
@@ -515,6 +627,23 @@ els.exportPayroll.addEventListener("click", () => {
   const from = els.fromDate.value || isoDate(startOfToday());
   const to = els.toDate.value || isoDate(endOfToday());
   exportCsv(shiftsInRange(from, to), `payroll-${from}-to-${to}.csv`);
+});
+
+els.emailPayroll.addEventListener("click", () => {
+  const report = buildPayrollReport();
+  const subject = `${state.settings.restaurantName} payroll report ${formatDate(report.from)} to ${formatDate(report.to)}`;
+  const body = buildPayrollEmail(report);
+  location.href = `mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+});
+
+els.printPayroll.addEventListener("click", () => {
+  renderPayroll();
+  document.body.classList.add("printing-report");
+  window.print();
+});
+
+window.addEventListener("afterprint", () => {
+  document.body.classList.remove("printing-report");
 });
 
 els.saveSettings.addEventListener("click", async () => {

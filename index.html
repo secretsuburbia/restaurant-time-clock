@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#0f766e">
     <title>Restaurant Time Clock</title>
     <link rel="manifest" href="manifest.webmanifest">
-    <link rel="stylesheet" href="styles.css?v=9">
+    <link rel="stylesheet" href="styles.css?v=10">
   </head>
   <body>
     <div class="app-shell">
@@ -132,8 +132,11 @@
                 <input id="toDate" type="date">
               </div>
               <button class="secondary" id="exportPayroll" type="button">Export CSV</button>
+              <button class="secondary" id="emailPayroll" type="button">Email report</button>
+              <button class="secondary" id="printPayroll" type="button">Print report</button>
             </div>
             <div class="summary-grid" id="payrollSummary"></div>
+            <section class="report-preview" id="payrollReport" aria-label="Printable payroll report"></section>
           </section>
 
           <section class="tab-panel" id="settingsPanel" hidden>
@@ -152,6 +155,6 @@
       </div>
     </dialog>
 
-    <script src="app.js?v=9"></script>
+    <script src="app.js?v=10"></script>
   </body>
 </html>

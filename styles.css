@@ -326,7 +326,7 @@ dialog::backdrop {
 .grid-form,
 .date-grid {
   display: grid;
-  grid-template-columns: 1.2fr 0.8fr 0.8fr auto;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) repeat(3, auto);
   align-items: end;
   gap: 12px;
 }
@@ -510,5 +510,104 @@ dialog::backdrop {
 
   .tab {
     flex: 1 1 92px;
+  }
+}
+
+.report-preview {
+  margin-top: 18px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+}
+
+.report-title {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 12px;
+  align-items: start;
+  margin-bottom: 16px;
+}
+
+.report-title h3,
+.report-preview h4 {
+  margin: 0;
+}
+
+.report-title h3 {
+  font-size: 1.45rem;
+}
+
+.report-preview h4 {
+  margin-top: 18px;
+  margin-bottom: 8px;
+}
+
+.report-total {
+  min-width: 130px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  text-align: right;
+}
+
+.report-total strong,
+.report-total span {
+  display: block;
+}
+
+.report-total span {
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.report-table-wrap {
+  overflow-x: auto;
+}
+
+@media print {
+  body.printing-report {
+    background: #fff;
+  }
+
+  body.printing-report > *:not(dialog),
+  body.printing-report dialog .dialog-header,
+  body.printing-report dialog .tabs,
+  body.printing-report dialog .date-grid,
+  body.printing-report dialog #payrollSummary,
+  body.printing-report dialog #employeesPanel,
+  body.printing-report dialog #settingsPanel {
+    display: none !important;
+  }
+
+  body.printing-report dialog,
+  body.printing-report dialog[open],
+  body.printing-report .dialog-shell,
+  body.printing-report #adminContent,
+  body.printing-report #payrollPanel,
+  body.printing-report #payrollReport {
+    display: block !important;
+    width: 100% !important;
+    max-width: none !important;
+    border: 0 !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    background: #fff !important;
+  }
+
+  body.printing-report .report-preview {
+    border: 0;
+  }
+
+  body.printing-report table {
+    min-width: 0;
+  }
+
+  body.printing-report th,
+  body.printing-report td {
+    white-space: normal;
   }
 }
