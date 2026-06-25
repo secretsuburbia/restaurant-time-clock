@@ -43,6 +43,14 @@ exports.handler = async (event) => {
       return handleSaveSettings(store, payload);
     }
 
+    if (action === "update-shift") {
+      return handleUpdateShift(store, payload);
+    }
+
+    if (action === "delete-shift") {
+      return handleDeleteShift(store, payload);
+    }
+
     return response(400, { error: "Unknown action" });
   } catch (error) {
     return response(500, { error: error.message || "Could not load restaurant records" });
@@ -148,6 +156,41 @@ async function handleSaveSettings(store, payload) {
   if (settings.adminPin) {
     state.settings.adminPin = clean(settings.adminPin, state.settings.adminPin, 20);
   }
+  state.updatedAt = new Date().toISOString();
+  await store.setJSON(stateKey, state);
+  return response(200, adminState(state));
+}
+
+async function handleUpdateShift(store, payload) {
+  const state = await getState(store);
+  if (!validAdminPin(state, payload.adminPin)) return response(403, { error: "Manager PIN does not match" });
+
+  const incoming = payload.shift || {};
+  const id = clean(incoming.id, "", 80);
+  const shift = state.shifts.find((record) => record.id === id);
+  if (!shift) return response(404, { error: "Shift was not found" });
+
+  const clockIn = clean(incoming.clockIn, "", 40);
+  const clockOut = incoming.clockOut ? clean(incoming.clockOut, "", 40) : null;
+  if (!isValidDate(clockIn)) return response(400, { error: "Clock-in time is not valid" });
+  if (clockOut && !isValidDate(clockOut)) return response(400, { error: "Clock-out time is not valid" });
+  if (clockOut && new Date(clockOut) < new Date(clockIn)) {
+    return response(400, { error: "Clock-out cannot be before clock-in" });
+  }
+
+  shift.clockIn = new Date(clockIn).toISOString();
+  shift.clockOut = clockOut ? new Date(clockOut).toISOString() : null;
+  state.updatedAt = new Date().toISOString();
+  await store.setJSON(stateKey, state);
+  return response(200, adminState(state));
+}
+
+async function handleDeleteShift(store, payload) {
+  const state = await getState(store);
+  if (!validAdminPin(state, payload.adminPin)) return response(403, { error: "Manager PIN does not match" });
+
+  const id = clean(payload.shiftId, "", 80);
+  state.shifts = state.shifts.filter((shift) => shift.id !== id);
   state.updatedAt = new Date().toISOString();
   await store.setJSON(stateKey, state);
   return response(200, adminState(state));
@@ -288,6 +331,10 @@ async function sendShiftText(event) {
   const code = details.code ? ` ${details.code}` : "";
   const message = details.message ? `: ${details.message}` : "";
   return { ok: false, error: `Twilio rejected the message${code}${message}` };
+}
+
+function isValidDate(value) {
+  return value && !Number.isNaN(new Date(value).getTime());
 }
 
 function clean(value, fallback, maxLength) {
