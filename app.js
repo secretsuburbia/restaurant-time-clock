@@ -5,7 +5,7 @@ let state = loadState();
 let selectedEmployeeId = "";
 let deferredInstallPrompt = null;
 let syncTimer = null;
-let managerPin = "";
+let managerToken = "";
 
 const els = {
   restaurantName: document.querySelector("#restaurantName"),
@@ -54,17 +54,12 @@ function newId() {
 function createDefaultState() {
   return {
     settings: {
-      restaurantName: "Restaurant Time Clock",
-      adminPin: "1234"
+      restaurantName: "Restaurant Time Clock"
     },
-    employees: [
-      { id: newId(), name: "Alex", wage: 17.2, pin: "1111", active: true },
-      { id: newId(), name: "Sam", wage: 18.5, pin: "2222", active: true }
-    ],
+    employees: [],
     shifts: []
   };
 }
-
 function canUseCloudData() {
   return Boolean(location.hostname) && location.protocol !== "file:";
 }
@@ -73,16 +68,31 @@ function loadState() {
   const saved = localStorage.getItem(storageKey);
   if (!saved) return createDefaultState();
   try {
-    return JSON.parse(saved);
+    const safeState = safeCachedState(JSON.parse(saved));
+    localStorage.setItem(storageKey, JSON.stringify(safeState));
+    return safeState;
   } catch {
     return createDefaultState();
   }
 }
 
-function saveState() {
-  localStorage.setItem(storageKey, JSON.stringify(state));
+function safeCachedState(source) {
+  return {
+    settings: {
+      restaurantName: source?.settings?.restaurantName || "Restaurant Time Clock"
+    },
+    employees: (source?.employees || []).map((employee) => ({
+      id: employee.id,
+      name: employee.name,
+      active: employee.active
+    })),
+    shifts: []
+  };
 }
 
+function saveState() {
+  localStorage.setItem(storageKey, JSON.stringify(safeCachedState(state)));
+}
 async function loadSharedState(showMessage = false) {
   if (!canUseCloudData()) return false;
 
@@ -113,10 +123,11 @@ async function postData(payload) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload)
     });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    return await response.json();
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) return { ...result, status: response.status };
+    return result;
   } catch {
-    return null;
+    return { error: "The shared service could not be reached" };
   }
 }
 
@@ -144,7 +155,7 @@ function getEmployee(id) {
 }
 
 function getOpenShift(employeeId) {
-  return state.shifts.find((shift) => shift.employeeId === employeeId && !shift.clockOut);
+  return state.shifts.find((shift) => shift.employeeId === employeeId && !shift.clockOut) || (getEmployee(employeeId)?.clockedIn ? { employeeId } : null);
 }
 
 function shiftHours(shift) {
@@ -175,9 +186,10 @@ function render() {
 
   const employee = getEmployee(selectedEmployeeId);
   const openShift = employee ? getOpenShift(employee.id) : null;
-  els.employeeState.textContent = !employee ? "Add employees" : openShift ? "Clocked in" : "Clocked out";
-  els.clockAction.textContent = openShift ? "Clock out" : "Clock in";
-  els.activeCount.textContent = state.shifts.filter((shift) => !shift.clockOut).length;
+  const managerView = Boolean(managerToken);
+  els.employeeState.textContent = !employee ? "No employees available" : managerView ? (openShift ? "Clocked in" : "Clocked out") : "Enter PIN to continue";
+  els.clockAction.textContent = managerView ? (openShift ? "Clock out" : "Clock in") : "Clock in / out";
+  els.activeCount.textContent = managerView ? state.shifts.filter((shift) => !shift.clockOut).length : "-";
 
   renderToday();
   renderEmployees();
@@ -385,7 +397,7 @@ async function clockAction() {
   });
 
   if (!result?.state || !result?.event) {
-    setMessage("Clock action failed. Please check the PIN and try again.", "error");
+    setMessage(result?.error || "Clock action failed. Please check the PIN and try again.", "error");
     return;
   }
 
@@ -402,74 +414,82 @@ async function clockAction() {
 async function loadAdminState(pin) {
   if (!canUseCloudData()) return false;
   const result = await postData({ action: "admin-load", adminPin: pin });
-  if (!result?.employees) {
+  if (!result?.employees || !result?.adminToken) {
     setMessage("Manager PIN does not match.", "error");
     return false;
   }
-  managerPin = pin;
-  state = result;
-  saveState();
+  applyAdminState(result);
   render();
   return true;
 }
 
+function applyAdminState(result) {
+  managerToken = result.adminToken || managerToken;
+  const { adminToken, ...adminState } = result;
+  state = adminState;
+  saveState();
+}
+
+function managerSessionFailed(message) {
+  managerToken = "";
+  els.adminLock.hidden = false;
+  els.adminContent.hidden = true;
+  setMessage(message, "error");
+}
+
 async function saveEmployeeToCloud(record) {
-  const result = await postData({ action: "save-employee", adminPin: managerPin, employee: record });
+  const result = await postData({ action: "save-employee", adminToken: managerToken, employee: record });
   if (!result?.employees) {
-    setMessage("Employee was not saved. Please unlock admin again.", "error");
+    managerSessionFailed("Employee was not saved. Please unlock admin again.");
     return;
   }
-  state = result;
-  saveState();
+  applyAdminState(result);
   render();
+  setMessage("Employee saved.", "ok");
 }
 
 async function toggleEmployeeInCloud(employeeId) {
-  const result = await postData({ action: "toggle-employee", adminPin: managerPin, employeeId });
+  const result = await postData({ action: "toggle-employee", adminToken: managerToken, employeeId });
   if (!result?.employees) {
-    setMessage("Employee status was not saved. Please unlock admin again.", "error");
+    managerSessionFailed("Employee status was not saved. Please unlock admin again.");
     return;
   }
-  state = result;
-  saveState();
+  applyAdminState(result);
   render();
 }
 
 async function updateShiftInCloud(shift) {
-  const result = await postData({ action: "update-shift", adminPin: managerPin, shift });
+  const result = await postData({ action: "update-shift", adminToken: managerToken, shift });
   if (!result?.employees) {
-    setMessage("Shift correction was not saved. Please unlock admin again.", "error");
+    managerSessionFailed("Shift correction was not saved. Please unlock admin again.");
     return;
   }
-  state = result;
-  saveState();
+  applyAdminState(result);
   render();
   setMessage("Shift correction saved.", "ok");
 }
 
 async function deleteShiftInCloud(shiftId) {
-  const result = await postData({ action: "delete-shift", adminPin: managerPin, shiftId });
+  const result = await postData({ action: "delete-shift", adminToken: managerToken, shiftId });
   if (!result?.employees) {
-    setMessage("Shift was not deleted. Please unlock admin again.", "error");
+    managerSessionFailed("Shift was not deleted. Please unlock admin again.");
     return;
   }
-  state = result;
-  saveState();
+  applyAdminState(result);
   render();
   setMessage("Shift deleted.", "ok");
 }
+
 async function saveSettingsToCloud(settings) {
-  const result = await postData({ action: "save-settings", adminPin: managerPin, settings });
+  const result = await postData({ action: "save-settings", adminToken: managerToken, settings });
   if (!result?.employees) {
-    setMessage("Settings were not saved. Please unlock admin again.", "error");
+    managerSessionFailed("Settings were not saved. Please unlock admin again.");
     return false;
   }
-  state = result;
-  saveState();
+  applyAdminState(result);
   render();
   return true;
 }
-
 async function sendShiftText(event) {
   if (!location.hostname || location.protocol === "file:") return;
 
@@ -505,8 +525,12 @@ async function saveEmployee(event) {
     active: existing ? existing.active : true
   };
 
-  if (!record.name || Number.isNaN(record.wage) || !record.pin) return;
+  if (!record.name || Number.isNaN(record.wage) || (!existing && !record.pin)) {
+    setMessage("Name, wage, and a PIN are required for a new employee.", "error");
+    return;
+  }
   els.employeeForm.reset();
+  els.employeeFormPin.placeholder = "Required for new employees";
   els.employeeId.value = "";
   selectedEmployeeId = selectedEmployeeId || id;
   await saveEmployeeToCloud(record);
@@ -638,7 +662,8 @@ els.employeeList.addEventListener("click", (event) => {
     els.employeeId.value = employee.id;
     els.employeeName.value = employee.name;
     els.employeeWage.value = employee.wage;
-    els.employeeFormPin.value = employee.pin;
+    els.employeeFormPin.value = "";
+    els.employeeFormPin.placeholder = "Leave blank to keep current PIN";
   }
 
   if (toggleId) {
@@ -647,12 +672,19 @@ els.employeeList.addEventListener("click", (event) => {
 });
 
 els.adminOpen.addEventListener("click", () => {
+  managerToken = "";
   els.adminDialog.showModal();
   els.adminLock.hidden = false;
   els.adminContent.hidden = true;
   els.adminPin.value = "";
 });
 
+els.adminDialog.addEventListener("close", () => {
+  managerToken = "";
+  els.adminLock.hidden = false;
+  els.adminContent.hidden = true;
+  loadSharedState();
+});
 els.adminClose.addEventListener("click", () => {
   els.adminDialog.close();
 });

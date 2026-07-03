@@ -1,3 +1,7 @@
+[hidden] {
+  display: none !important;
+}
+
 :root {
   --bg: #f7f5ef;
   --ink: #17211f;

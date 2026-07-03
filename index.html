@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#0f766e">
     <title>Restaurant Time Clock</title>
     <link rel="manifest" href="manifest.webmanifest">
-    <link rel="stylesheet" href="styles.css?v=11">
+    <link rel="stylesheet" href="styles.css?v=12">
   </head>
   <body>
     <div class="app-shell">
@@ -26,7 +26,7 @@
             <span class="label">Current time</span>
             <strong id="currentTime">--:--</strong>
           </div>
-          <div>
+          <div hidden>
             <span class="label">On shift</span>
             <strong id="activeCount">0</strong>
           </div>
@@ -55,7 +55,7 @@
           <p class="message" id="message"></p>
         </section>
 
-        <section class="activity-panel">
+        <section class="activity-panel" hidden>
           <div class="section-heading">
             <h2>Today</h2>
             <button class="secondary" id="exportToday" type="button">Export CSV</button>
@@ -114,7 +114,7 @@
               </div>
               <div class="field">
                 <label for="employeeFormPin">Employee PIN</label>
-                <input id="employeeFormPin" inputmode="numeric" maxlength="8" required>
+                <input id="employeeFormPin" inputmode="numeric" maxlength="8" placeholder="Required for new employees">
               </div>
               <button class="primary" type="submit">Save employee</button>
             </form>
@@ -162,6 +162,6 @@
       </div>
     </dialog>
 
-    <script src="app.js?v=11"></script>
+    <script src="app.js?v=12"></script>
   </body>
 </html>
