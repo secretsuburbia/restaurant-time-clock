@@ -1,5 +1,8 @@
+const crypto = require("crypto");
+
 const storeName = "restaurant-time-clock";
 const stateKey = "state";
+const adminSessionHours = 8;
 
 exports.handler = async (event) => {
   if (event.httpMethod === "OPTIONS") {
@@ -26,9 +29,7 @@ exports.handler = async (event) => {
     }
 
     if (action === "admin-load") {
-      const state = await getState(store);
-      if (!validAdminPin(state, payload.adminPin)) return response(403, { error: "Manager PIN does not match" });
-      return response(200, adminState(state));
+      return handleAdminLoad(store, payload);
     }
 
     if (action === "save-employee") {
@@ -57,6 +58,20 @@ exports.handler = async (event) => {
   }
 };
 
+async function handleAdminLoad(store, payload) {
+  const state = await getState(store);
+  if (isLoginBlocked(state, "admin")) {
+    return response(429, { error: "Too many incorrect attempts. Try again in 15 minutes" });
+  }
+  if (!validAdminPin(state, payload.adminPin)) {
+    await recordLoginFailure(store, state, "admin");
+    return response(403, { error: "Manager PIN does not match" });
+  }
+
+  clearLoginFailures(state, "admin");
+  await store.setJSON(stateKey, state);
+  return response(200, adminState(state, createAdminToken()));
+}
 async function handleClock(store, payload) {
   const state = await getState(store);
   const employeeId = clean(payload.employeeId, "", 80);
@@ -64,7 +79,15 @@ async function handleClock(store, payload) {
   const employee = state.employees.find((record) => record.id === employeeId && record.active);
 
   if (!employee) return response(404, { error: "Employee was not found" });
-  if (employee.pin !== pin) return response(403, { error: "That PIN does not match this employee" });
+  const loginKey = `employee:${employee.id}`;
+  if (isLoginBlocked(state, loginKey)) {
+    return response(429, { error: "Too many incorrect attempts. Try again in 15 minutes" });
+  }
+  if (!verifyPin(pin, employee.pinHash)) {
+    await recordLoginFailure(store, state, loginKey);
+    return response(403, { error: "That PIN does not match this employee" });
+  }
+  clearLoginFailures(state, loginKey);
 
   const now = new Date().toISOString();
   const openShift = state.shifts.find((shift) => shift.employeeId === employee.id && !shift.clockOut);
@@ -111,7 +134,7 @@ async function handleClock(store, payload) {
 
 async function handleSaveEmployee(store, payload) {
   const state = await getState(store);
-  if (!validAdminPin(state, payload.adminPin)) return response(403, { error: "Manager PIN does not match" });
+  if (!validAdminSession(payload.adminToken)) return response(403, { error: "Manager session has expired" });
 
   const incoming = payload.employee || {};
   const id = clean(incoming.id, makeId(), 80);
@@ -120,23 +143,23 @@ async function handleSaveEmployee(store, payload) {
     id,
     name: clean(incoming.name, "", 80),
     wage: Number(incoming.wage) || 0,
-    pin: clean(incoming.pin, "", 20),
+    pinHash: incoming.pin ? hashPin(clean(incoming.pin, "", 20)) : existing?.pinHash || "",
     active: existing ? existing.active : true
   };
 
-  if (!record.name || !record.pin) return response(400, { error: "Employee name and PIN are required" });
+  if (!record.name || !record.pinHash) return response(400, { error: "Employee name and PIN are required" });
 
   state.employees = existing
     ? state.employees.map((employee) => employee.id === id ? record : employee)
     : [...state.employees, record];
   state.updatedAt = new Date().toISOString();
   await store.setJSON(stateKey, state);
-  return response(200, adminState(state));
+  return response(200, adminState(state, payload.adminToken));
 }
 
 async function handleToggleEmployee(store, payload) {
   const state = await getState(store);
-  if (!validAdminPin(state, payload.adminPin)) return response(403, { error: "Manager PIN does not match" });
+  if (!validAdminSession(payload.adminToken)) return response(403, { error: "Manager session has expired" });
 
   const id = clean(payload.employeeId, "", 80);
   state.employees = state.employees.map((employee) =>
@@ -144,26 +167,26 @@ async function handleToggleEmployee(store, payload) {
   );
   state.updatedAt = new Date().toISOString();
   await store.setJSON(stateKey, state);
-  return response(200, adminState(state));
+  return response(200, adminState(state, payload.adminToken));
 }
 
 async function handleSaveSettings(store, payload) {
   const state = await getState(store);
-  if (!validAdminPin(state, payload.adminPin)) return response(403, { error: "Manager PIN does not match" });
+  if (!validAdminSession(payload.adminToken)) return response(403, { error: "Manager session has expired" });
 
   const settings = payload.settings || {};
   state.settings.restaurantName = clean(settings.restaurantName, state.settings.restaurantName, 80);
   if (settings.adminPin) {
-    state.settings.adminPin = clean(settings.adminPin, state.settings.adminPin, 20);
+    state.settings.adminPinHash = hashPin(clean(settings.adminPin, "", 20));
   }
   state.updatedAt = new Date().toISOString();
   await store.setJSON(stateKey, state);
-  return response(200, adminState(state));
+  return response(200, adminState(state, payload.adminToken));
 }
 
 async function handleUpdateShift(store, payload) {
   const state = await getState(store);
-  if (!validAdminPin(state, payload.adminPin)) return response(403, { error: "Manager PIN does not match" });
+  if (!validAdminSession(payload.adminToken)) return response(403, { error: "Manager session has expired" });
 
   const incoming = payload.shift || {};
   const id = clean(incoming.id, "", 80);
@@ -182,18 +205,18 @@ async function handleUpdateShift(store, payload) {
   shift.clockOut = clockOut ? new Date(clockOut).toISOString() : null;
   state.updatedAt = new Date().toISOString();
   await store.setJSON(stateKey, state);
-  return response(200, adminState(state));
+  return response(200, adminState(state, payload.adminToken));
 }
 
 async function handleDeleteShift(store, payload) {
   const state = await getState(store);
-  if (!validAdminPin(state, payload.adminPin)) return response(403, { error: "Manager PIN does not match" });
+  if (!validAdminSession(payload.adminToken)) return response(403, { error: "Manager session has expired" });
 
   const id = clean(payload.shiftId, "", 80);
   state.shifts = state.shifts.filter((shift) => shift.id !== id);
   state.updatedAt = new Date().toISOString();
   await store.setJSON(stateKey, state);
-  return response(200, adminState(state));
+  return response(200, adminState(state, payload.adminToken));
 }
 
 async function getStore() {
@@ -207,7 +230,11 @@ async function getStore() {
 
 async function getState(store) {
   const saved = await store.get(stateKey, { type: "json" });
-  if (saved) return sanitizeState(saved);
+  if (saved) {
+    const state = sanitizeState(saved);
+    if (containsLegacyPins(saved)) await store.setJSON(stateKey, state);
+    return state;
+  }
 
   const state = createDefaultState();
   await store.setJSON(stateKey, state);
@@ -218,13 +245,14 @@ function createDefaultState() {
   return {
     settings: {
       restaurantName: "Restaurant Time Clock",
-      adminPin: "1234"
+      adminPinHash: hashPin("1234")
     },
     employees: [
-      { id: "alex", name: "Alex", wage: 17.2, pin: "1111", active: true },
-      { id: "sam", name: "Sam", wage: 18.5, pin: "2222", active: true }
+      { id: "alex", name: "Alex", wage: 17.2, pinHash: hashPin("1111"), active: true },
+      { id: "sam", name: "Sam", wage: 18.5, pinHash: hashPin("2222"), active: true }
     ],
     shifts: [],
+    security: { loginFailures: {} },
     updatedAt: new Date().toISOString()
   };
 }
@@ -239,28 +267,32 @@ function publicState(state) {
       name: employee.name,
       active: employee.active
     })),
-    shifts: state.shifts.map((shift) => ({
-      id: shift.id,
-      employeeId: shift.employeeId,
-      employeeName: shift.employeeName,
-      clockIn: shift.clockIn,
-      clockOut: shift.clockOut
-    })),
+    shifts: [],
     updatedAt: state.updatedAt
   };
 }
 
-function adminState(state) {
+function adminState(state, adminToken) {
   return {
-    ...state,
     settings: {
       restaurantName: state.settings.restaurantName
-    }
+    },
+    employees: state.employees.map((employee) => ({
+      id: employee.id,
+      name: employee.name,
+      wage: employee.wage,
+      active: employee.active,
+      pinConfigured: Boolean(employee.pinHash),
+      clockedIn: state.shifts.some((shift) => shift.employeeId === employee.id && !shift.clockOut)
+    })),
+    shifts: state.shifts,
+    updatedAt: state.updatedAt,
+    adminToken
   };
 }
 
 function validAdminPin(state, pin) {
-  return clean(pin, "", 20) === state.settings.adminPin;
+  return verifyPin(clean(pin, "", 20), state.settings.adminPinHash);
 }
 
 function sanitizeState(input) {
@@ -273,13 +305,13 @@ function sanitizeState(input) {
   return {
     settings: {
       restaurantName: clean(settings.restaurantName, fallback.settings.restaurantName, 80),
-      adminPin: clean(settings.adminPin, fallback.settings.adminPin, 20)
+      adminPinHash: normalizePinHash(settings.adminPinHash, settings.adminPin, "1234")
     },
     employees: employees.map((employee) => ({
       id: clean(employee.id, makeId(), 80),
       name: clean(employee.name, "Employee", 80),
       wage: Number(employee.wage) || 0,
-      pin: clean(employee.pin, "", 20),
+      pinHash: normalizePinHash(employee.pinHash, employee.pin, ""),
       active: employee.active !== false
     })),
     shifts: shifts.map((shift) => ({
@@ -290,10 +322,110 @@ function sanitizeState(input) {
       clockIn: clean(shift.clockIn, new Date().toISOString(), 40),
       clockOut: shift.clockOut ? clean(shift.clockOut, "", 40) : null
     })),
+    security: sanitizeSecurity(source.security),
     updatedAt: clean(source.updatedAt, fallback.updatedAt, 40)
   };
 }
 
+function containsLegacyPins(input) {
+  return Boolean(
+    input?.settings?.adminPin ||
+    input?.employees?.some((employee) => employee?.pin)
+  );
+}
+
+function normalizePinHash(hash, legacyPin, fallbackPin) {
+  const existing = clean(hash, "", 256);
+  if (existing.startsWith("scrypt$")) return existing;
+  const pin = clean(legacyPin, fallbackPin, 20);
+  return pin ? hashPin(pin) : "";
+}
+
+function hashPin(pin) {
+  const salt = crypto.randomBytes(16);
+  const derived = crypto.scryptSync(pin, salt, 32);
+  return `scrypt$${salt.toString("hex")}$${derived.toString("hex")}`;
+}
+
+function verifyPin(pin, storedHash) {
+  const parts = String(storedHash || "").split("$");
+  if (parts.length !== 3 || parts[0] !== "scrypt") return false;
+
+  try {
+    const salt = Buffer.from(parts[1], "hex");
+    const expected = Buffer.from(parts[2], "hex");
+    const actual = crypto.scryptSync(pin, salt, expected.length);
+    return expected.length === actual.length && crypto.timingSafeEqual(expected, actual);
+  } catch {
+    return false;
+  }
+}
+
+function sanitizeSecurity(security) {
+  const failures = security?.loginFailures && typeof security.loginFailures === "object"
+    ? security.loginFailures
+    : {};
+  const loginFailures = {};
+
+  Object.entries(failures).forEach(([key, values]) => {
+    if (!Array.isArray(values)) return;
+    loginFailures[clean(key, "", 100)] = values
+      .map(Number)
+      .filter(Number.isFinite)
+      .slice(-10);
+  });
+
+  return { loginFailures };
+}
+
+function recentLoginFailures(state, key) {
+  const cutoff = Date.now() - 15 * 60 * 1000;
+  return (state.security?.loginFailures?.[key] || []).filter((time) => time >= cutoff);
+}
+
+function isLoginBlocked(state, key) {
+  return recentLoginFailures(state, key).length >= 5;
+}
+
+async function recordLoginFailure(store, state, key) {
+  state.security ||= { loginFailures: {} };
+  state.security.loginFailures ||= {};
+  state.security.loginFailures[key] = [...recentLoginFailures(state, key), Date.now()].slice(-5);
+  await store.setJSON(stateKey, state);
+}
+
+function clearLoginFailures(state, key) {
+  if (state.security?.loginFailures) delete state.security.loginFailures[key];
+}
+function createAdminToken() {
+  const payload = Buffer.from(JSON.stringify({
+    scope: "admin",
+    expiresAt: Date.now() + adminSessionHours * 60 * 60 * 1000
+  })).toString("base64url");
+  return `${payload}.${signToken(payload)}`;
+}
+
+function validAdminSession(token) {
+  const [payload, signature] = String(token || "").split(".");
+  if (!payload || !signature) return false;
+
+  const expected = Buffer.from(signToken(payload));
+  const actual = Buffer.from(signature);
+  if (expected.length !== actual.length || !crypto.timingSafeEqual(expected, actual)) return false;
+
+  try {
+    const details = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+    return details.scope === "admin" && Number(details.expiresAt) > Date.now();
+  } catch {
+    return false;
+  }
+}
+
+function signToken(payload) {
+  const secret = process.env.ADMIN_SESSION_SECRET || process.env.NETLIFY_BLOBS_TOKEN;
+  if (!secret) throw new Error("Manager session secret is not configured");
+  return crypto.createHmac("sha256", secret).update(payload).digest("base64url");
+}
 async function sendShiftText(event) {
   const {
     TWILIO_ACCOUNT_SID,
