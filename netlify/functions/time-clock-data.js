@@ -115,7 +115,8 @@ async function handleClock(store, payload) {
   const textResult = await sendShiftText({
     employeeName: employee.name,
     action: actionText,
-    timeText: new Date(now).toLocaleString([], {
+    timeText: new Date(now).toLocaleString("en-CA", {
+      timeZone: "America/Toronto",
       month: "short",
       day: "numeric",
       hour: "numeric",
