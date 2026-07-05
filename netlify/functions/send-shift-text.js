@@ -42,7 +42,8 @@ exports.handler = async (event) => {
   const time = payload.time ? new Date(payload.time) : new Date();
   const timeText = clientTimeText || (Number.isNaN(time.getTime())
     ? "now"
-    : time.toLocaleString("en-US", {
+    : time.toLocaleString("en-CA", {
+      timeZone: "America/Toronto",
       month: "short",
       day: "numeric",
       hour: "numeric",
