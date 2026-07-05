@@ -40,6 +40,10 @@ exports.handler = async (event) => {
       return handleToggleEmployee(store, payload);
     }
 
+    if (action === "delete-employee") {
+      return handleDeleteEmployee(store, payload);
+    }
+
     if (action === "save-settings") {
       return handleSaveSettings(store, payload);
     }
@@ -165,6 +169,24 @@ async function handleToggleEmployee(store, payload) {
   state.employees = state.employees.map((employee) =>
     employee.id === id ? { ...employee, active: !employee.active } : employee
   );
+  state.updatedAt = new Date().toISOString();
+  await store.setJSON(stateKey, state);
+  return response(200, adminState(state, payload.adminToken));
+}
+
+async function handleDeleteEmployee(store, payload) {
+  const state = await getState(store);
+  if (!validAdminSession(payload.adminToken)) return response(403, { error: "Manager session has expired" });
+
+  const id = clean(payload.employeeId, "", 80);
+  const employee = state.employees.find((record) => record.id === id);
+  if (!employee) return response(404, { error: "Employee was not found" });
+  if (state.shifts.some((shift) => shift.employeeId === id && !shift.clockOut)) {
+    return response(409, { error: "Clock this employee out before deleting them" });
+  }
+
+  state.employees = state.employees.filter((record) => record.id !== id);
+  if (state.loginFailures) delete state.loginFailures[`employee:${id}`];
   state.updatedAt = new Date().toISOString();
   await store.setJSON(stateKey, state);
   return response(200, adminState(state, payload.adminToken));
