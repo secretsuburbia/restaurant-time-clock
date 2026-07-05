@@ -1,4 +1,4 @@
-const cacheName = "restaurant-time-clock-v12";
+const cacheName = "restaurant-time-clock-v13";
 const files = [
   "./",
   "./index.html",

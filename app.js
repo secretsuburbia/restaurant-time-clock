@@ -229,6 +229,7 @@ function renderEmployees() {
         <button class="secondary danger" type="button" data-toggle="${employee.id}">
           ${employee.active ? "Disable" : "Enable"}
         </button>
+        <button class="secondary danger" type="button" data-delete-employee="${employee.id}">Delete</button>
       </div>
     </div>
   `).join("");
@@ -458,6 +459,21 @@ async function toggleEmployeeInCloud(employeeId) {
   render();
 }
 
+async function deleteEmployeeInCloud(employeeId) {
+  const result = await postData({ action: "delete-employee", adminToken: managerToken, employeeId });
+  if (!result?.employees) {
+    setMessage(result?.error || "Employee was not deleted.", "error");
+    return;
+  }
+  if (selectedEmployeeId === employeeId) selectedEmployeeId = "";
+  applyAdminState(result);
+  els.employeeForm.reset();
+  els.employeeId.value = "";
+  els.employeeFormPin.placeholder = "Required for new employees";
+  render();
+  setMessage("Employee deleted. Existing shift records were preserved.", "ok");
+}
+
 async function updateShiftInCloud(shift) {
   const result = await postData({ action: "update-shift", adminToken: managerToken, shift });
   if (!result?.employees) {
@@ -656,6 +672,7 @@ els.employeeForm.addEventListener("submit", saveEmployee);
 els.employeeList.addEventListener("click", (event) => {
   const editId = event.target.dataset.edit;
   const toggleId = event.target.dataset.toggle;
+  const deleteId = event.target.dataset.deleteEmployee;
 
   if (editId) {
     const employee = getEmployee(editId);
@@ -668,6 +685,13 @@ els.employeeList.addEventListener("click", (event) => {
 
   if (toggleId) {
     toggleEmployeeInCloud(toggleId);
+  }
+
+  if (deleteId) {
+    const employee = getEmployee(deleteId);
+    const confirmed = confirm(`Permanently delete ${employee?.name || "this employee"}? Existing shift records will be kept.`);
+    if (!confirmed) return;
+    deleteEmployeeInCloud(deleteId);
   }
 });
 
