@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#0f766e">
     <title>Restaurant Time Clock</title>
     <link rel="manifest" href="manifest.webmanifest">
-    <link rel="stylesheet" href="styles.css?v=12">
+    <link rel="stylesheet" href="styles.css?v=13">
   </head>
   <body>
     <div class="app-shell">
@@ -51,7 +51,13 @@
             <div class="employee-state" id="employeeState">Select your name</div>
           </div>
 
+          <label class="check-row" for="autoClockOutConsent">
+            <input id="autoClockOutConsent" type="checkbox">
+            <span>Auto clock me out if this phone leaves the restaurant</span>
+          </label>
+
           <button class="primary action-button" id="clockAction" type="button">Clock in</button>
+          <p class="hint" id="autoClockOutStatus">Auto clock-out is off until a manager sets the restaurant location.</p>
           <p class="message" id="message"></p>
         </section>
 
@@ -152,6 +158,28 @@
               <input id="restaurantInput">
             </div>
             <div class="field">
+              <label class="check-row" for="autoClockOutEnabled">
+                <input id="autoClockOutEnabled" type="checkbox">
+                <span>Enable automatic clock-out when employees leave the premises</span>
+              </label>
+            </div>
+            <div class="settings-grid">
+              <div class="field">
+                <label for="geofenceLatitude">Restaurant latitude</label>
+                <input id="geofenceLatitude" inputmode="decimal" placeholder="Example: 43.6532">
+              </div>
+              <div class="field">
+                <label for="geofenceLongitude">Restaurant longitude</label>
+                <input id="geofenceLongitude" inputmode="decimal" placeholder="Example: -79.3832">
+              </div>
+              <div class="field">
+                <label for="geofenceRadiusMeters">Allowed radius (meters)</label>
+                <input id="geofenceRadiusMeters" inputmode="numeric" min="50" max="5000" step="10" type="number" placeholder="150">
+              </div>
+            </div>
+            <button class="secondary" id="useCurrentLocation" type="button">Use this phone's current location</button>
+            <p class="hint">Set this while standing at the restaurant. Employees must allow location access on their phone. Tracking works while the app is open or installed and allowed by the phone.</p>
+            <div class="field">
               <label for="adminPinChange">Change admin PIN</label>
               <input id="adminPinChange" inputmode="numeric" type="password" placeholder="Leave blank to keep current">
             </div>
@@ -162,6 +190,6 @@
       </div>
     </dialog>
 
-    <script src="app.js?v=12"></script>
+    <script src="app.js?v=13"></script>
   </body>
 </html>

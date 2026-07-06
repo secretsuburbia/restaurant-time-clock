@@ -1,11 +1,18 @@
 const storageKey = "restaurant-time-clock-v1";
+const autoClockStorageKey = "restaurant-time-clock-auto-clock-session";
 const dataFunctionUrl = "/.netlify/functions/time-clock-data";
+const autoClockOutsideGraceMs = 90 * 1000;
+const maxUsefulAccuracyMeters = 250;
 
 let state = loadState();
 let selectedEmployeeId = "";
 let deferredInstallPrompt = null;
 let syncTimer = null;
 let managerToken = "";
+let autoClockWatchId = null;
+let autoClockSession = loadAutoClockSession();
+let outsidePremisesSince = 0;
+let autoClockOutInFlight = false;
 
 const els = {
   restaurantName: document.querySelector("#restaurantName"),
@@ -15,6 +22,8 @@ const els = {
   employeePin: document.querySelector("#employeePin"),
   employeeState: document.querySelector("#employeeState"),
   clockAction: document.querySelector("#clockAction"),
+  autoClockOutConsent: document.querySelector("#autoClockOutConsent"),
+  autoClockOutStatus: document.querySelector("#autoClockOutStatus"),
   message: document.querySelector("#message"),
   todayRows: document.querySelector("#todayRows"),
   exportToday: document.querySelector("#exportToday"),
@@ -40,6 +49,11 @@ const els = {
   emailPayroll: document.querySelector("#emailPayroll"),
   printPayroll: document.querySelector("#printPayroll"),
   restaurantInput: document.querySelector("#restaurantInput"),
+  autoClockOutEnabled: document.querySelector("#autoClockOutEnabled"),
+  geofenceLatitude: document.querySelector("#geofenceLatitude"),
+  geofenceLongitude: document.querySelector("#geofenceLongitude"),
+  geofenceRadiusMeters: document.querySelector("#geofenceRadiusMeters"),
+  useCurrentLocation: document.querySelector("#useCurrentLocation"),
   adminPinChange: document.querySelector("#adminPinChange"),
   saveSettings: document.querySelector("#saveSettings"),
   installButton: document.querySelector("#installButton")
@@ -54,7 +68,11 @@ function newId() {
 function createDefaultState() {
   return {
     settings: {
-      restaurantName: "Restaurant Time Clock"
+      restaurantName: "Restaurant Time Clock",
+      autoClockOutEnabled: false,
+      geofenceLatitude: null,
+      geofenceLongitude: null,
+      geofenceRadiusMeters: 150
     },
     employees: [],
     shifts: []
@@ -79,7 +97,11 @@ function loadState() {
 function safeCachedState(source) {
   return {
     settings: {
-      restaurantName: source?.settings?.restaurantName || "Restaurant Time Clock"
+      restaurantName: source?.settings?.restaurantName || "Restaurant Time Clock",
+      autoClockOutEnabled: Boolean(source?.settings?.autoClockOutEnabled),
+      geofenceLatitude: numberOrNull(source?.settings?.geofenceLatitude),
+      geofenceLongitude: numberOrNull(source?.settings?.geofenceLongitude),
+      geofenceRadiusMeters: Math.max(50, Math.min(5000, Number(source?.settings?.geofenceRadiusMeters) || 150))
     },
     employees: (source?.employees || []).map((employee) => ({
       id: employee.id,
@@ -93,6 +115,30 @@ function safeCachedState(source) {
 function saveState() {
   localStorage.setItem(storageKey, JSON.stringify(safeCachedState(state)));
 }
+
+function loadAutoClockSession() {
+  try {
+    const session = JSON.parse(localStorage.getItem(autoClockStorageKey) || "null");
+    return session?.employeeId && session?.shiftId && session?.autoClockToken ? session : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveAutoClockSession(session) {
+  autoClockSession = session;
+  if (session) {
+    localStorage.setItem(autoClockStorageKey, JSON.stringify(session));
+  } else {
+    localStorage.removeItem(autoClockStorageKey);
+  }
+}
+
+function numberOrNull(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
 async function loadSharedState(showMessage = false) {
   if (!canUseCloudData()) return false;
 
@@ -106,6 +152,7 @@ async function loadSharedState(showMessage = false) {
       selectedEmployeeId = state.employees.find((employee) => employee.active)?.id || "";
     }
     render();
+    if (autoClockSession && autoClockWatchId === null) startAutoClockWatcher();
     if (showMessage) setMessage("Shared restaurant records loaded.", "ok");
     return true;
   } catch {
@@ -138,6 +185,12 @@ function money(value) {
 function displayTime(value) {
   if (!value) return "";
   return new Date(value).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
+function clockOutLabel(shift) {
+  if (!shift.clockOut) return "";
+  const label = displayTime(shift.clockOut);
+  return shift.clockOutReason === "auto-left-premises" ? `${label} (auto)` : label;
 }
 
 function displayHours(hours) {
@@ -190,10 +243,43 @@ function render() {
   els.employeeState.textContent = !employee ? "No employees available" : managerView ? (openShift ? "Clocked in" : "Clocked out") : "Enter PIN to continue";
   els.clockAction.textContent = managerView ? (openShift ? "Clock out" : "Clock in") : "Clock in / out";
   els.activeCount.textContent = managerView ? state.shifts.filter((shift) => !shift.clockOut).length : "-";
+  renderAutoClockStatus();
 
   renderToday();
   renderEmployees();
   renderPayroll();
+}
+
+function geofenceConfigured() {
+  return Boolean(
+    state.settings.autoClockOutEnabled &&
+    Number.isFinite(Number(state.settings.geofenceLatitude)) &&
+    Number.isFinite(Number(state.settings.geofenceLongitude)) &&
+    Number(state.settings.geofenceRadiusMeters) >= 50
+  );
+}
+
+function renderAutoClockStatus() {
+  if (!els.autoClockOutConsent || !els.autoClockOutStatus) return;
+  const configured = geofenceConfigured();
+  els.autoClockOutConsent.disabled = !configured || !("geolocation" in navigator);
+
+  if (!("geolocation" in navigator)) {
+    els.autoClockOutStatus.textContent = "Auto clock-out is not available on this device.";
+    return;
+  }
+
+  if (!configured) {
+    els.autoClockOutStatus.textContent = "Auto clock-out is off until a manager sets the restaurant location.";
+    return;
+  }
+
+  if (autoClockSession) {
+    els.autoClockOutStatus.textContent = "Auto clock-out is watching this phone's location for the current shift.";
+    return;
+  }
+
+  els.autoClockOutStatus.textContent = "Check the box before clocking in to auto clock out when this phone leaves the restaurant.";
 }
 
 function renderToday() {
@@ -208,7 +294,7 @@ function renderToday() {
         <tr>
           <td>${escapeHtml(employee?.name || shift.employeeName || "Unknown")}</td>
           <td>${displayTime(shift.clockIn)}</td>
-          <td>${displayTime(shift.clockOut) || "Working"}</td>
+          <td>${clockOutLabel(shift) || "Working"}</td>
           <td>${displayHours(shiftHours(shift))}</td>
           <td>${money(shiftPay(shift))}</td>
         </tr>
@@ -333,7 +419,7 @@ function renderPayrollReport(report) {
       <tr>
         <td>${escapeHtml(shift.employeeName || getEmployee(shift.employeeId)?.name || "Unknown")}</td>
         <td>${new Date(shift.clockIn).toLocaleString()}</td>
-        <td>${shift.clockOut ? new Date(shift.clockOut).toLocaleString() : "Still working"}</td>
+        <td>${shift.clockOut ? `${new Date(shift.clockOut).toLocaleString()}${shift.clockOutReason === "auto-left-premises" ? " (auto)" : ""}` : "Still working"}</td>
         <td>${displayHours(shiftHours(shift))}</td>
       </tr>
     `).join("")
@@ -406,10 +492,138 @@ async function clockAction() {
   selectedEmployeeId = employee.id;
   els.employeePin.value = "";
   saveState();
+
+  if (result.event.action === "clocked in" && els.autoClockOutConsent?.checked && result.event.autoClockToken) {
+    saveAutoClockSession({
+      employeeId: employee.id,
+      employeeName: result.event.employeeName,
+      shiftId: result.event.shiftId,
+      autoClockToken: result.event.autoClockToken
+    });
+    startAutoClockWatcher();
+  } else if (result.event.action === "clocked out" && autoClockSession?.employeeId === employee.id) {
+    stopAutoClockWatcher();
+    saveAutoClockSession(null);
+  }
+
   render();
 
   const textStatus = result.event.textSent ? " Text sent." : result.event.textError ? ` Text alert failed. ${result.event.textError}.` : "";
   setMessage(`${result.event.employeeName} ${result.event.action} at ${displayTime(result.event.time)}.${textStatus}`, result.event.textSent ? "ok" : "error");
+}
+
+function startAutoClockWatcher() {
+  if (!autoClockSession || !geofenceConfigured() || !("geolocation" in navigator)) return;
+  if (autoClockWatchId !== null) navigator.geolocation.clearWatch(autoClockWatchId);
+
+  outsidePremisesSince = 0;
+  autoClockWatchId = navigator.geolocation.watchPosition(
+    handleAutoClockPosition,
+    handleAutoClockLocationError,
+    {
+      enableHighAccuracy: true,
+      maximumAge: 30 * 1000,
+      timeout: 60 * 1000
+    }
+  );
+  renderAutoClockStatus();
+}
+
+function stopAutoClockWatcher() {
+  if (autoClockWatchId !== null && "geolocation" in navigator) {
+    navigator.geolocation.clearWatch(autoClockWatchId);
+  }
+  autoClockWatchId = null;
+  outsidePremisesSince = 0;
+  autoClockOutInFlight = false;
+  renderAutoClockStatus();
+}
+
+function handleAutoClockLocationError() {
+  if (!autoClockSession) return;
+  els.autoClockOutStatus.textContent = "Auto clock-out needs location permission to keep watching this shift.";
+}
+
+function handleAutoClockPosition(position) {
+  if (!autoClockSession || autoClockOutInFlight || !geofenceConfigured()) return;
+
+  const { latitude, longitude, accuracy } = position.coords;
+  if (Number(accuracy) > maxUsefulAccuracyMeters) {
+    els.autoClockOutStatus.textContent = "Auto clock-out is waiting for a more accurate location reading.";
+    return;
+  }
+
+  const distance = distanceMeters(
+    latitude,
+    longitude,
+    Number(state.settings.geofenceLatitude),
+    Number(state.settings.geofenceLongitude)
+  );
+  const radius = Number(state.settings.geofenceRadiusMeters) || 150;
+  const outside = distance > radius + Math.min(Number(accuracy) || 0, radius);
+
+  if (!outside) {
+    outsidePremisesSince = 0;
+    els.autoClockOutStatus.textContent = `Auto clock-out active. This phone is about ${Math.round(distance)} m from the restaurant.`;
+    return;
+  }
+
+  if (!outsidePremisesSince) outsidePremisesSince = Date.now();
+  const remainingMs = autoClockOutsideGraceMs - (Date.now() - outsidePremisesSince);
+  if (remainingMs > 0) {
+    els.autoClockOutStatus.textContent = `Outside the restaurant area. Auto clock-out in ${Math.ceil(remainingMs / 1000)} seconds if still outside.`;
+    return;
+  }
+
+  autoClockOut();
+}
+
+async function autoClockOut() {
+  if (!autoClockSession || autoClockOutInFlight) return;
+  autoClockOutInFlight = true;
+  setMessage("Auto clocking out because this phone left the restaurant area...", "ok");
+
+  const result = await postData({
+    action: "auto-clock-out",
+    employeeId: autoClockSession.employeeId,
+    shiftId: autoClockSession.shiftId,
+    autoClockToken: autoClockSession.autoClockToken
+  });
+
+  if (!result?.state || !result?.event) {
+    const alreadyClockedOut = result?.status === 409;
+    if (alreadyClockedOut) {
+      stopAutoClockWatcher();
+      saveAutoClockSession(null);
+      await loadSharedState();
+      setMessage("Auto clock-out stopped because this shift is already clocked out.", "ok");
+      return;
+    }
+
+    autoClockOutInFlight = false;
+    setMessage(result?.error || "Auto clock-out could not be saved. Please clock out manually.", "error");
+    return;
+  }
+
+  state = result.state;
+  saveState();
+  stopAutoClockWatcher();
+  saveAutoClockSession(null);
+  render();
+
+  const textStatus = result.event.textSent ? " Text sent." : result.event.textError ? ` Text alert failed. ${result.event.textError}.` : "";
+  setMessage(`${result.event.employeeName} ${result.event.action} at ${displayTime(result.event.time)}.${textStatus}`, result.event.textSent ? "ok" : "error");
+}
+
+function distanceMeters(lat1, lon1, lat2, lon2) {
+  const earthRadiusMeters = 6371e3;
+  const phi1 = lat1 * Math.PI / 180;
+  const phi2 = lat2 * Math.PI / 180;
+  const deltaPhi = (lat2 - lat1) * Math.PI / 180;
+  const deltaLambda = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(deltaPhi / 2) ** 2 +
+    Math.cos(phi1) * Math.cos(phi2) * Math.sin(deltaLambda / 2) ** 2;
+  return earthRadiusMeters * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
 async function loadAdminState(pin) {
@@ -631,7 +845,7 @@ function buildPayrollEmail(report) {
     report.shifts.forEach((shift) => {
       const name = shift.employeeName || getEmployee(shift.employeeId)?.name || "Unknown";
       const clockIn = new Date(shift.clockIn).toLocaleString();
-      const clockOut = shift.clockOut ? new Date(shift.clockOut).toLocaleString() : "Still working";
+      const clockOut = shift.clockOut ? `${new Date(shift.clockOut).toLocaleString()}${shift.clockOutReason === "auto-left-premises" ? " (auto)" : ""}` : "Still working";
       lines.push(`${name}: ${clockIn} to ${clockOut}, ${displayHours(shiftHours(shift))} hours`);
     });
   } else {
@@ -719,6 +933,10 @@ els.unlockAdmin.addEventListener("click", async () => {
   els.adminLock.hidden = true;
   els.adminContent.hidden = false;
   els.restaurantInput.value = state.settings.restaurantName;
+  els.autoClockOutEnabled.checked = Boolean(state.settings.autoClockOutEnabled);
+  els.geofenceLatitude.value = state.settings.geofenceLatitude ?? "";
+  els.geofenceLongitude.value = state.settings.geofenceLongitude ?? "";
+  els.geofenceRadiusMeters.value = state.settings.geofenceRadiusMeters || 150;
   els.fromDate.value = els.fromDate.value || isoDate(startOfToday());
   els.toDate.value = els.toDate.value || isoDate(endOfToday());
   renderPayroll();
@@ -792,10 +1010,59 @@ window.addEventListener("afterprint", () => {
   document.body.classList.remove("printing-report");
 });
 
+els.useCurrentLocation.addEventListener("click", () => {
+  if (!("geolocation" in navigator)) {
+    setMessage("This device does not support location.", "error");
+    return;
+  }
+
+  setMessage("Getting this phone's current location...", "ok");
+  navigator.geolocation.getCurrentPosition(
+    (position) => {
+      els.geofenceLatitude.value = position.coords.latitude.toFixed(6);
+      els.geofenceLongitude.value = position.coords.longitude.toFixed(6);
+      els.geofenceRadiusMeters.value = els.geofenceRadiusMeters.value || 150;
+      setMessage(`Restaurant location filled in. Accuracy: about ${Math.round(position.coords.accuracy)} meters.`, "ok");
+    },
+    () => {
+      setMessage("Location permission was denied or unavailable.", "error");
+    },
+    { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+  );
+});
+
 els.saveSettings.addEventListener("click", async () => {
   const settings = {
-    restaurantName: els.restaurantInput.value.trim() || "Restaurant Time Clock"
+    restaurantName: els.restaurantInput.value.trim() || "Restaurant Time Clock",
+    autoClockOutEnabled: els.autoClockOutEnabled.checked,
+    geofenceLatitude: els.geofenceLatitude.value.trim(),
+    geofenceLongitude: els.geofenceLongitude.value.trim(),
+    geofenceRadiusMeters: els.geofenceRadiusMeters.value.trim() || 150
   };
+
+  if (settings.autoClockOutEnabled && (!settings.geofenceLatitude || !settings.geofenceLongitude)) {
+    setMessage("Add the restaurant latitude and longitude before enabling auto clock-out.", "error");
+    return;
+  }
+  if (settings.autoClockOutEnabled && (
+    !Number.isFinite(Number(settings.geofenceLatitude)) ||
+    !Number.isFinite(Number(settings.geofenceLongitude)) ||
+    !Number.isFinite(Number(settings.geofenceRadiusMeters))
+  )) {
+    setMessage("Restaurant location and radius must be valid numbers.", "error");
+    return;
+  }
+  if (settings.autoClockOutEnabled && (
+    Number(settings.geofenceLatitude) < -90 ||
+    Number(settings.geofenceLatitude) > 90 ||
+    Number(settings.geofenceLongitude) < -180 ||
+    Number(settings.geofenceLongitude) > 180 ||
+    Number(settings.geofenceRadiusMeters) < 50
+  )) {
+    setMessage("Use a valid latitude, longitude, and radius of at least 50 meters.", "error");
+    return;
+  }
+
   if (els.adminPinChange.value.trim()) {
     settings.adminPin = els.adminPinChange.value.trim();
     els.adminPinChange.value = "";
@@ -834,6 +1101,7 @@ if ("serviceWorker" in navigator) {
 els.fromDate.value = isoDate(startOfToday());
 els.toDate.value = isoDate(endOfToday());
 render();
+if (autoClockSession) startAutoClockWatcher();
 loadSharedState(true);
 if (canUseCloudData()) {
   syncTimer = setInterval(() => {
