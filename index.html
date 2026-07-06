@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#0f766e">
     <title>Restaurant Time Clock</title>
     <link rel="manifest" href="manifest.webmanifest">
-    <link rel="stylesheet" href="styles.css?v=13">
+    <link rel="stylesheet" href="styles.css?v=14">
   </head>
   <body>
     <div class="app-shell">
@@ -51,10 +51,9 @@
             <div class="employee-state" id="employeeState">Select your name</div>
           </div>
 
-          <label class="check-row" for="autoClockOutConsent">
-            <input id="autoClockOutConsent" type="checkbox">
+          <div class="gps-requirement">
             <span>GPS auto clock-out required when enabled by manager</span>
-          </label>
+          </div>
 
           <button class="primary action-button" id="clockAction" type="button">Clock in</button>
           <p class="hint" id="autoClockOutStatus">Auto clock-out is off until a manager sets the restaurant location.</p>
@@ -190,6 +189,6 @@
       </div>
     </dialog>
 
-    <script src="app.js?v=14"></script>
+    <script src="app.js?v=15"></script>
   </body>
 </html>
