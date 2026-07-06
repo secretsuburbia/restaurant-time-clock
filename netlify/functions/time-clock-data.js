@@ -28,6 +28,10 @@ exports.handler = async (event) => {
       return handleClock(store, payload);
     }
 
+    if (action === "auto-clock-out") {
+      return handleAutoClockOut(store, payload);
+    }
+
     if (action === "admin-load") {
       return handleAdminLoad(store, payload);
     }
@@ -96,17 +100,25 @@ async function handleClock(store, payload) {
   const now = new Date().toISOString();
   const openShift = state.shifts.find((shift) => shift.employeeId === employee.id && !shift.clockOut);
   const actionText = openShift ? "clocked out" : "clocked in";
+  let autoClockToken = "";
+  let shiftId = openShift?.id || "";
 
   if (openShift) {
     openShift.clockOut = now;
+    openShift.clockOutReason = "manual";
+    openShift.autoClockTokenHash = "";
   } else {
+    autoClockToken = makeSecureToken();
+    shiftId = makeId();
     state.shifts.push({
-      id: makeId(),
+      id: shiftId,
       employeeId: employee.id,
       employeeName: employee.name,
       wageAtClockIn: Number(employee.wage) || 0,
       clockIn: now,
-      clockOut: null
+      clockOut: null,
+      clockOutReason: "",
+      autoClockTokenHash: hashAutoClockToken(autoClockToken)
     });
   }
 
@@ -131,6 +143,59 @@ async function handleClock(store, payload) {
       employeeName: employee.name,
       action: actionText,
       time: now,
+      shiftId,
+      autoClockToken,
+      textSent: textResult.ok,
+      textError: textResult.error || ""
+    }
+  });
+}
+
+async function handleAutoClockOut(store, payload) {
+  const state = await getState(store);
+  const employeeId = clean(payload.employeeId, "", 80);
+  const shiftId = clean(payload.shiftId, "", 80);
+  const token = clean(payload.autoClockToken, "", 160);
+  const employee = state.employees.find((record) => record.id === employeeId && record.active);
+  const openShift = state.shifts.find((shift) =>
+    shift.id === shiftId &&
+    shift.employeeId === employeeId &&
+    !shift.clockOut
+  );
+
+  if (!employee) return response(404, { error: "Employee was not found" });
+  if (!openShift) return response(409, { error: "That shift is already clocked out" });
+  if (!verifyAutoClockToken(token, openShift.autoClockTokenHash)) {
+    return response(403, { error: "Auto clock-out session is not valid" });
+  }
+
+  const now = new Date().toISOString();
+  openShift.clockOut = now;
+  openShift.clockOutReason = "auto-left-premises";
+  openShift.autoClockTokenHash = "";
+  state.updatedAt = now;
+  await store.setJSON(stateKey, state);
+
+  const textResult = await sendShiftText({
+    employeeName: employee.name,
+    action: "auto clocked out",
+    timeText: new Date(now).toLocaleString("en-CA", {
+      timeZone: "America/Toronto",
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit"
+    }),
+    restaurantName: state.settings.restaurantName
+  });
+
+  return response(200, {
+    state: publicState(state),
+    event: {
+      employeeName: employee.name,
+      action: "auto clocked out",
+      time: now,
+      shiftId: openShift.id,
       textSent: textResult.ok,
       textError: textResult.error || ""
     }
@@ -199,6 +264,10 @@ async function handleSaveSettings(store, payload) {
 
   const settings = payload.settings || {};
   state.settings.restaurantName = clean(settings.restaurantName, state.settings.restaurantName, 80);
+  state.settings.autoClockOutEnabled = Boolean(settings.autoClockOutEnabled);
+  state.settings.geofenceLatitude = parseCoordinate(settings.geofenceLatitude, -90, 90);
+  state.settings.geofenceLongitude = parseCoordinate(settings.geofenceLongitude, -180, 180);
+  state.settings.geofenceRadiusMeters = Math.max(50, Math.min(5000, Number(settings.geofenceRadiusMeters) || 150));
   if (settings.adminPin) {
     state.settings.adminPinHash = hashPin(clean(settings.adminPin, "", 20));
   }
@@ -268,7 +337,11 @@ function createDefaultState() {
   return {
     settings: {
       restaurantName: "Restaurant Time Clock",
-      adminPinHash: hashPin("1234")
+      adminPinHash: hashPin("1234"),
+      autoClockOutEnabled: false,
+      geofenceLatitude: null,
+      geofenceLongitude: null,
+      geofenceRadiusMeters: 150
     },
     employees: [
       { id: "alex", name: "Alex", wage: 17.2, pinHash: hashPin("1111"), active: true },
@@ -283,7 +356,11 @@ function createDefaultState() {
 function publicState(state) {
   return {
     settings: {
-      restaurantName: state.settings.restaurantName
+      restaurantName: state.settings.restaurantName,
+      autoClockOutEnabled: Boolean(state.settings.autoClockOutEnabled),
+      geofenceLatitude: state.settings.geofenceLatitude,
+      geofenceLongitude: state.settings.geofenceLongitude,
+      geofenceRadiusMeters: state.settings.geofenceRadiusMeters
     },
     employees: state.employees.map((employee) => ({
       id: employee.id,
@@ -298,7 +375,11 @@ function publicState(state) {
 function adminState(state, adminToken) {
   return {
     settings: {
-      restaurantName: state.settings.restaurantName
+      restaurantName: state.settings.restaurantName,
+      autoClockOutEnabled: Boolean(state.settings.autoClockOutEnabled),
+      geofenceLatitude: state.settings.geofenceLatitude,
+      geofenceLongitude: state.settings.geofenceLongitude,
+      geofenceRadiusMeters: state.settings.geofenceRadiusMeters
     },
     employees: state.employees.map((employee) => ({
       id: employee.id,
@@ -308,7 +389,7 @@ function adminState(state, adminToken) {
       pinConfigured: Boolean(employee.pinHash),
       clockedIn: state.shifts.some((shift) => shift.employeeId === employee.id && !shift.clockOut)
     })),
-    shifts: state.shifts,
+    shifts: state.shifts.map(publicShiftRecord),
     updatedAt: state.updatedAt,
     adminToken
   };
@@ -316,6 +397,11 @@ function adminState(state, adminToken) {
 
 function validAdminPin(state, pin) {
   return verifyPin(clean(pin, "", 20), state.settings.adminPinHash);
+}
+
+function publicShiftRecord(shift) {
+  const { autoClockTokenHash, ...record } = shift;
+  return record;
 }
 
 function sanitizeState(input) {
@@ -328,7 +414,11 @@ function sanitizeState(input) {
   return {
     settings: {
       restaurantName: clean(settings.restaurantName, fallback.settings.restaurantName, 80),
-      adminPinHash: normalizePinHash(settings.adminPinHash, settings.adminPin, "1234")
+      adminPinHash: normalizePinHash(settings.adminPinHash, settings.adminPin, "1234"),
+      autoClockOutEnabled: Boolean(settings.autoClockOutEnabled),
+      geofenceLatitude: parseCoordinate(settings.geofenceLatitude, -90, 90),
+      geofenceLongitude: parseCoordinate(settings.geofenceLongitude, -180, 180),
+      geofenceRadiusMeters: Math.max(50, Math.min(5000, Number(settings.geofenceRadiusMeters) || 150))
     },
     employees: employees.map((employee) => ({
       id: clean(employee.id, makeId(), 80),
@@ -343,7 +433,9 @@ function sanitizeState(input) {
       employeeName: clean(shift.employeeName, "Unknown", 80),
       wageAtClockIn: Number(shift.wageAtClockIn) || 0,
       clockIn: clean(shift.clockIn, new Date().toISOString(), 40),
-      clockOut: shift.clockOut ? clean(shift.clockOut, "", 40) : null
+      clockOut: shift.clockOut ? clean(shift.clockOut, "", 40) : null,
+      clockOutReason: clean(shift.clockOutReason, "", 40),
+      autoClockTokenHash: shift.clockOut ? "" : clean(shift.autoClockTokenHash, "", 160)
     })),
     security: sanitizeSecurity(source.security),
     updatedAt: clean(source.updatedAt, fallback.updatedAt, 40)
@@ -449,6 +541,21 @@ function signToken(payload) {
   if (!secret) throw new Error("Manager session secret is not configured");
   return crypto.createHmac("sha256", secret).update(payload).digest("base64url");
 }
+
+function makeSecureToken() {
+  return crypto.randomBytes(32).toString("base64url");
+}
+
+function hashAutoClockToken(token) {
+  return crypto.createHash("sha256").update(String(token || "")).digest("hex");
+}
+
+function verifyAutoClockToken(token, storedHash) {
+  const expected = Buffer.from(clean(storedHash, "", 160));
+  const actual = Buffer.from(hashAutoClockToken(token));
+  return Boolean(token) && expected.length === actual.length && crypto.timingSafeEqual(expected, actual);
+}
+
 async function sendShiftText(event) {
   const {
     TWILIO_ACCOUNT_SID,
@@ -499,6 +606,11 @@ function clean(value, fallback, maxLength) {
 
 function makeId() {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function parseCoordinate(value, min, max) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= min && number <= max ? number : null;
 }
 
 function response(statusCode, body) {
