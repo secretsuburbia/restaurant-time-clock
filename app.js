@@ -262,10 +262,13 @@ function geofenceConfigured() {
 function renderAutoClockStatus() {
   if (!els.autoClockOutConsent || !els.autoClockOutStatus) return;
   const configured = geofenceConfigured();
-  els.autoClockOutConsent.disabled = !configured || !("geolocation" in navigator);
+  els.autoClockOutConsent.checked = configured;
+  els.autoClockOutConsent.disabled = true;
 
   if (!("geolocation" in navigator)) {
-    els.autoClockOutStatus.textContent = "Auto clock-out is not available on this device.";
+    els.autoClockOutStatus.textContent = configured
+      ? "Auto clock-out is required, but this device does not support location."
+      : "Auto clock-out is not available on this device.";
     return;
   }
 
@@ -279,7 +282,7 @@ function renderAutoClockStatus() {
     return;
   }
 
-  els.autoClockOutStatus.textContent = "Check the box before clocking in to auto clock out when this phone leaves the restaurant.";
+  els.autoClockOutStatus.textContent = "Auto clock-out is required by the manager. Location permission is required to clock in.";
 }
 
 function renderToday() {
@@ -477,6 +480,21 @@ async function clockAction() {
     return;
   }
 
+  const willClockIn = !getOpenShift(employee.id);
+  if (willClockIn && geofenceConfigured()) {
+    if (!("geolocation" in navigator)) {
+      setMessage("Location is required to clock in. Use a phone/browser with location access.", "error");
+      return;
+    }
+
+    setMessage("Checking location permission...", "ok");
+    const locationAllowed = await confirmLocationPermission();
+    if (!locationAllowed) {
+      setMessage("Location permission is required to clock in while auto clock-out is enabled.", "error");
+      return;
+    }
+  }
+
   const result = await postData({
     action: "clock",
     employeeId: employee.id,
@@ -493,7 +511,7 @@ async function clockAction() {
   els.employeePin.value = "";
   saveState();
 
-  if (result.event.action === "clocked in" && els.autoClockOutConsent?.checked && result.event.autoClockToken) {
+  if (result.event.action === "clocked in" && geofenceConfigured() && result.event.autoClockToken) {
     saveAutoClockSession({
       employeeId: employee.id,
       employeeName: result.event.employeeName,
@@ -510,6 +528,16 @@ async function clockAction() {
 
   const textStatus = result.event.textSent ? " Text sent." : result.event.textError ? ` Text alert failed. ${result.event.textError}.` : "";
   setMessage(`${result.event.employeeName} ${result.event.action} at ${displayTime(result.event.time)}.${textStatus}`, result.event.textSent ? "ok" : "error");
+}
+
+function confirmLocationPermission() {
+  return new Promise((resolve) => {
+    navigator.geolocation.getCurrentPosition(
+      () => resolve(true),
+      () => resolve(false),
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+    );
+  });
 }
 
 function startAutoClockWatcher() {
