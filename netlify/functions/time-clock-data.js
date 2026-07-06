@@ -312,8 +312,12 @@ async function handleDeleteShift(store, payload) {
 }
 
 async function getStore() {
-  const { getStore } = await import("@netlify/blobs");
-  return getStore(storeName);
+  const blobs = await import("@netlify/blobs");
+  return blobs.getStore({
+    name: storeName,
+    siteID: process.env.NETLIFY_BLOBS_SITE_ID,
+    token: process.env.NETLIFY_BLOBS_TOKEN
+  });
 }
 
 async function getState(store) {
