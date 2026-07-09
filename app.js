@@ -22,6 +22,7 @@ const els = {
   employeePin: document.querySelector("#employeePin"),
   employeeState: document.querySelector("#employeeState"),
   clockAction: document.querySelector("#clockAction"),
+  breakAction: document.querySelector("#breakAction"),
   autoClockOutConsent: document.querySelector("#autoClockOutConsent"),
   autoClockOutStatus: document.querySelector("#autoClockOutStatus"),
   message: document.querySelector("#message"),
@@ -106,7 +107,9 @@ function safeCachedState(source) {
     employees: (source?.employees || []).map((employee) => ({
       id: employee.id,
       name: employee.name,
-      active: employee.active
+      active: employee.active,
+      clockedIn: Boolean(employee.clockedIn),
+      onBreak: Boolean(employee.onBreak)
     })),
     shifts: []
   };
@@ -197,6 +200,10 @@ function displayHours(hours) {
   return Number(hours || 0).toFixed(2);
 }
 
+function displayBreakHours(shift) {
+  return displayHours(breakHours(shift));
+}
+
 function sameDay(a, b) {
   const first = new Date(a);
   const second = new Date(b);
@@ -211,10 +218,29 @@ function getOpenShift(employeeId) {
   return state.shifts.find((shift) => shift.employeeId === employeeId && !shift.clockOut) || (getEmployee(employeeId)?.clockedIn ? { employeeId } : null);
 }
 
+function isEmployeeOnBreak(employeeId) {
+  const openShift = state.shifts.find((shift) => shift.employeeId === employeeId && !shift.clockOut);
+  return Boolean(openShift ? activeBreak(openShift) : getEmployee(employeeId)?.onBreak);
+}
+
+function activeBreak(shift) {
+  return (shift.breaks || []).find((record) => record.start && !record.end) || null;
+}
+
+function breakHours(shift) {
+  return (shift.breaks || []).reduce((total, record) => {
+    if (!record.start) return total;
+    const start = new Date(record.start).getTime();
+    const end = record.end ? new Date(record.end).getTime() : (shift.clockOut ? new Date(shift.clockOut).getTime() : Date.now());
+    return total + Math.max(0, (end - start) / 36e5);
+  }, 0);
+}
+
 function shiftHours(shift) {
   const start = new Date(shift.clockIn).getTime();
   const end = shift.clockOut ? new Date(shift.clockOut).getTime() : Date.now();
-  return Math.max(0, (end - start) / 36e5);
+  const grossHours = Math.max(0, (end - start) / 36e5);
+  return Math.max(0, grossHours - breakHours(shift));
 }
 
 function shiftPay(shift) {
@@ -239,9 +265,14 @@ function render() {
 
   const employee = getEmployee(selectedEmployeeId);
   const openShift = employee ? getOpenShift(employee.id) : null;
+  const onBreak = employee ? isEmployeeOnBreak(employee.id) : false;
   const managerView = Boolean(managerToken);
-  els.employeeState.textContent = !employee ? "No employees available" : managerView ? (openShift ? "Clocked in" : "Clocked out") : "Enter PIN to continue";
+  els.employeeState.textContent = !employee ? "No employees available" : managerView ? (openShift ? (onBreak ? "On break" : "Clocked in") : "Clocked out") : (openShift ? (onBreak ? "On break" : "Clocked in") : "Enter PIN to continue");
   els.clockAction.textContent = managerView ? (openShift ? "Clock out" : "Clock in") : "Clock in / out";
+  if (els.breakAction) {
+    els.breakAction.textContent = onBreak ? "End break" : "Start break";
+    els.breakAction.disabled = !employee || !openShift;
+  }
   els.activeCount.textContent = managerView ? state.shifts.filter((shift) => !shift.clockOut).length : "-";
   renderAutoClockStatus();
 
@@ -260,10 +291,12 @@ function geofenceConfigured() {
 }
 
 function renderAutoClockStatus() {
-  if (!els.autoClockOutConsent || !els.autoClockOutStatus) return;
+  if (!els.autoClockOutStatus) return;
   const configured = geofenceConfigured();
-  els.autoClockOutConsent.checked = configured;
-  els.autoClockOutConsent.disabled = true;
+  if (els.autoClockOutConsent) {
+    els.autoClockOutConsent.checked = configured;
+    els.autoClockOutConsent.disabled = true;
+  }
 
   if (!("geolocation" in navigator)) {
     els.autoClockOutStatus.textContent = configured
@@ -298,12 +331,13 @@ function renderToday() {
           <td>${escapeHtml(employee?.name || shift.employeeName || "Unknown")}</td>
           <td>${displayTime(shift.clockIn)}</td>
           <td>${clockOutLabel(shift) || "Working"}</td>
+          <td>${displayBreakHours(shift)}</td>
           <td>${displayHours(shiftHours(shift))}</td>
           <td>${money(shiftPay(shift))}</td>
         </tr>
       `;
     }).join("")
-    : `<tr><td colspan="5">No shifts yet today.</td></tr>`;
+    : `<tr><td colspan="6">No shifts yet today.</td></tr>`;
 }
 
 function renderEmployees() {
@@ -386,7 +420,7 @@ function renderShiftCorrections(report) {
       <div class="correction-item" data-shift-id="${escapeHtml(shift.id)}">
         <div>
           <strong>${escapeHtml(shift.employeeName || getEmployee(shift.employeeId)?.name || "Unknown")}</strong>
-          <div class="hint">${displayHours(shiftHours(shift))} hours</div>
+          <div class="hint">${displayHours(shiftHours(shift))} paid hours, ${displayBreakHours(shift)} break hours</div>
         </div>
         <div class="correction-fields">
           <label>
@@ -423,10 +457,11 @@ function renderPayrollReport(report) {
         <td>${escapeHtml(shift.employeeName || getEmployee(shift.employeeId)?.name || "Unknown")}</td>
         <td>${new Date(shift.clockIn).toLocaleString()}</td>
         <td>${shift.clockOut ? `${new Date(shift.clockOut).toLocaleString()}${shift.clockOutReason === "auto-left-premises" ? " (auto)" : ""}` : "Still working"}</td>
+        <td>${displayBreakHours(shift)}</td>
         <td>${displayHours(shiftHours(shift))}</td>
       </tr>
     `).join("")
-    : `<tr><td colspan="4">No shift details in this date range.</td></tr>`;
+    : `<tr><td colspan="5">No shift details in this date range.</td></tr>`;
 
   els.payrollReport.innerHTML = `
     <div class="report-title">
@@ -454,7 +489,7 @@ function renderPayrollReport(report) {
     <h4>Shift details</h4>
     <div class="table-wrap report-table-wrap">
       <table>
-        <thead><tr><th>Employee</th><th>Clock in</th><th>Clock out</th><th>Hours</th></tr></thead>
+        <thead><tr><th>Employee</th><th>Clock in</th><th>Clock out</th><th>Breaks</th><th>Hours</th></tr></thead>
         <tbody>${shiftRows}</tbody>
       </table>
     </div>
@@ -524,6 +559,49 @@ async function clockAction() {
     saveAutoClockSession(null);
   }
 
+  render();
+
+  const textStatus = result.event.textSent ? " Text sent." : result.event.textError ? ` Text alert failed. ${result.event.textError}.` : "";
+  setMessage(`${result.event.employeeName} ${result.event.action} at ${displayTime(result.event.time)}.${textStatus}`, result.event.textSent ? "ok" : "error");
+}
+
+async function breakAction() {
+  await loadSharedState();
+
+  const employee = getEmployee(selectedEmployeeId);
+  if (!employee) {
+    setMessage("Add an employee first.", "error");
+    return;
+  }
+  if (!getOpenShift(employee.id)) {
+    setMessage("Clock in before starting a break.", "error");
+    return;
+  }
+  if (!els.employeePin.value.trim()) {
+    setMessage("Enter your PIN first.", "error");
+    return;
+  }
+  if (!canUseCloudData()) {
+    setMessage("Shared records are only available on the live Netlify app.", "error");
+    return;
+  }
+
+  setMessage(isEmployeeOnBreak(employee.id) ? "Ending break..." : "Starting break...", "ok");
+  const result = await postData({
+    action: "break",
+    employeeId: employee.id,
+    pin: els.employeePin.value.trim()
+  });
+
+  if (!result?.state || !result?.event) {
+    setMessage(result?.error || "Break action failed. Please check the PIN and try again.", "error");
+    return;
+  }
+
+  state = result.state;
+  selectedEmployeeId = employee.id;
+  els.employeePin.value = "";
+  saveState();
   render();
 
   const textStatus = result.event.textSent ? " Text sent." : result.event.textError ? ` Text alert failed. ${result.event.textError}.` : "";
@@ -795,13 +873,14 @@ async function saveEmployee(event) {
 }
 
 function exportCsv(shifts, fileName) {
-  const header = ["Employee", "Clock In", "Clock Out", "Hours", "Wage", "Pay"];
+  const header = ["Employee", "Clock In", "Clock Out", "Break Hours", "Paid Hours", "Wage", "Pay"];
   const rows = shifts.map((shift) => {
     const employee = getEmployee(shift.employeeId);
     return [
       employee?.name || shift.employeeName || "Unknown",
       new Date(shift.clockIn).toLocaleString(),
       shift.clockOut ? new Date(shift.clockOut).toLocaleString() : "",
+      displayBreakHours(shift),
       displayHours(shiftHours(shift)),
       Number(shift.wageAtClockIn || 0).toFixed(2),
       shiftPay(shift).toFixed(2)
@@ -874,7 +953,7 @@ function buildPayrollEmail(report) {
       const name = shift.employeeName || getEmployee(shift.employeeId)?.name || "Unknown";
       const clockIn = new Date(shift.clockIn).toLocaleString();
       const clockOut = shift.clockOut ? `${new Date(shift.clockOut).toLocaleString()}${shift.clockOutReason === "auto-left-premises" ? " (auto)" : ""}` : "Still working";
-      lines.push(`${name}: ${clockIn} to ${clockOut}, ${displayHours(shiftHours(shift))} hours`);
+      lines.push(`${name}: ${clockIn} to ${clockOut}, ${displayBreakHours(shift)} break hours, ${displayHours(shiftHours(shift))} paid hours`);
     });
   } else {
     lines.push("No shift details in this date range.");
@@ -909,6 +988,7 @@ els.employeeSelect.addEventListener("change", () => {
 });
 
 els.clockAction.addEventListener("click", clockAction);
+els.breakAction?.addEventListener("click", breakAction);
 els.employeeForm.addEventListener("submit", saveEmployee);
 
 els.employeeList.addEventListener("click", (event) => {
