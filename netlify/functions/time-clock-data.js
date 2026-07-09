@@ -28,6 +28,10 @@ exports.handler = async (event) => {
       return handleClock(store, payload);
     }
 
+    if (action === "break") {
+      return handleBreak(store, payload);
+    }
+
     if (action === "auto-clock-out") {
       return handleAutoClockOut(store, payload);
     }
@@ -104,6 +108,8 @@ async function handleClock(store, payload) {
   let shiftId = openShift?.id || "";
 
   if (openShift) {
+    const currentBreak = activeBreak(openShift);
+    if (currentBreak) currentBreak.end = now;
     openShift.clockOut = now;
     openShift.clockOutReason = "manual";
     openShift.autoClockTokenHash = "";
@@ -118,6 +124,7 @@ async function handleClock(store, payload) {
       clockIn: now,
       clockOut: null,
       clockOutReason: "",
+      breaks: [],
       autoClockTokenHash: hashAutoClockToken(autoClockToken)
     });
   }
@@ -151,6 +158,64 @@ async function handleClock(store, payload) {
   });
 }
 
+async function handleBreak(store, payload) {
+  const state = await getState(store);
+  const employeeId = clean(payload.employeeId, "", 80);
+  const pin = clean(payload.pin, "", 20);
+  const employee = state.employees.find((record) => record.id === employeeId && record.active);
+
+  if (!employee) return response(404, { error: "Employee was not found" });
+  const loginKey = `employee:${employee.id}`;
+  if (isLoginBlocked(state, loginKey)) {
+    return response(429, { error: "Too many incorrect attempts. Try again in 15 minutes" });
+  }
+  if (!verifyPin(pin, employee.pinHash)) {
+    await recordLoginFailure(store, state, loginKey);
+    return response(403, { error: "That PIN does not match this employee" });
+  }
+  clearLoginFailures(state, loginKey);
+
+  const openShift = state.shifts.find((shift) => shift.employeeId === employee.id && !shift.clockOut);
+  if (!openShift) return response(409, { error: "Clock in before starting a break" });
+
+  openShift.breaks ||= [];
+  const now = new Date().toISOString();
+  const currentBreak = activeBreak(openShift);
+  const actionText = currentBreak ? "ended break" : "started break";
+
+  if (currentBreak) {
+    currentBreak.end = now;
+  } else {
+    openShift.breaks.push({ start: now, end: null });
+  }
+
+  state.updatedAt = now;
+  await store.setJSON(stateKey, state);
+  const textResult = await sendShiftText({
+    employeeName: employee.name,
+    action: actionText,
+    timeText: new Date(now).toLocaleString("en-CA", {
+      timeZone: "America/Toronto",
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit"
+    }),
+    restaurantName: state.settings.restaurantName
+  });
+
+  return response(200, {
+    state: publicState(state),
+    event: {
+      employeeName: employee.name,
+      action: actionText,
+      time: now,
+      textSent: textResult.ok,
+      textError: textResult.error || ""
+    }
+  });
+}
+
 async function handleAutoClockOut(store, payload) {
   const state = await getState(store);
   const employeeId = clean(payload.employeeId, "", 80);
@@ -170,6 +235,8 @@ async function handleAutoClockOut(store, payload) {
   }
 
   const now = new Date().toISOString();
+  const currentBreak = activeBreak(openShift);
+  if (currentBreak) currentBreak.end = now;
   openShift.clockOut = now;
   openShift.clockOutReason = "auto-left-premises";
   openShift.autoClockTokenHash = "";
@@ -365,7 +432,9 @@ function publicState(state) {
     employees: state.employees.map((employee) => ({
       id: employee.id,
       name: employee.name,
-      active: employee.active
+      active: employee.active,
+      clockedIn: state.shifts.some((shift) => shift.employeeId === employee.id && !shift.clockOut),
+      onBreak: state.shifts.some((shift) => shift.employeeId === employee.id && !shift.clockOut && activeBreak(shift))
     })),
     shifts: [],
     updatedAt: state.updatedAt
@@ -387,7 +456,8 @@ function adminState(state, adminToken) {
       wage: employee.wage,
       active: employee.active,
       pinConfigured: Boolean(employee.pinHash),
-      clockedIn: state.shifts.some((shift) => shift.employeeId === employee.id && !shift.clockOut)
+      clockedIn: state.shifts.some((shift) => shift.employeeId === employee.id && !shift.clockOut),
+      onBreak: state.shifts.some((shift) => shift.employeeId === employee.id && !shift.clockOut && activeBreak(shift))
     })),
     shifts: state.shifts.map(publicShiftRecord),
     updatedAt: state.updatedAt,
@@ -402,6 +472,10 @@ function validAdminPin(state, pin) {
 function publicShiftRecord(shift) {
   const { autoClockTokenHash, ...record } = shift;
   return record;
+}
+
+function activeBreak(shift) {
+  return (shift.breaks || []).find((record) => record.start && !record.end) || null;
 }
 
 function sanitizeState(input) {
@@ -435,6 +509,7 @@ function sanitizeState(input) {
       clockIn: clean(shift.clockIn, new Date().toISOString(), 40),
       clockOut: shift.clockOut ? clean(shift.clockOut, "", 40) : null,
       clockOutReason: clean(shift.clockOutReason, "", 40),
+      breaks: sanitizeBreaks(shift.breaks),
       autoClockTokenHash: shift.clockOut ? "" : clean(shift.autoClockTokenHash, "", 160)
     })),
     security: sanitizeSecurity(source.security),
@@ -447,6 +522,15 @@ function containsLegacyPins(input) {
     input?.settings?.adminPin ||
     input?.employees?.some((employee) => employee?.pin)
   );
+}
+
+function sanitizeBreaks(breaks) {
+  return Array.isArray(breaks)
+    ? breaks.map((record) => ({
+      start: clean(record?.start, "", 40),
+      end: record?.end ? clean(record.end, "", 40) : null
+    })).filter((record) => isValidDate(record.start) && (!record.end || isValidDate(record.end)))
+    : [];
 }
 
 function normalizePinHash(hash, legacyPin, fallbackPin) {
