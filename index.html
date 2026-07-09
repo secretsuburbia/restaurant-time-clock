@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#0f766e">
     <title>Restaurant Time Clock</title>
     <link rel="manifest" href="manifest.webmanifest">
-    <link rel="stylesheet" href="styles.css?v=14">
+    <link rel="stylesheet" href="styles.css?v=15">
   </head>
   <body>
     <div class="app-shell">
@@ -56,6 +56,7 @@
           </div>
 
           <button class="primary action-button" id="clockAction" type="button">Clock in</button>
+          <button class="secondary action-button break-button" id="breakAction" type="button">Start break</button>
           <p class="hint" id="autoClockOutStatus">Auto clock-out is off until a manager sets the restaurant location.</p>
           <p class="message" id="message"></p>
         </section>
@@ -72,6 +73,7 @@
                   <th>Employee</th>
                   <th>In</th>
                   <th>Out</th>
+                  <th>Breaks</th>
                   <th>Hours</th>
                   <th>Pay</th>
                 </tr>
@@ -189,6 +191,6 @@
       </div>
     </dialog>
 
-    <script src="app.js?v=15"></script>
+    <script src="app.js?v=16"></script>
   </body>
 </html>
