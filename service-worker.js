@@ -1,9 +1,9 @@
-const cacheName = "restaurant-time-clock-v17";
+const cacheName = "restaurant-time-clock-v18";
 const files = [
   "./",
   "./index.html",
   "./styles.css?v=15",
-  "./app.js?v=16",
+  "./app.js?v=17",
   "./manifest.webmanifest",
   "./icon.svg"
 ];
