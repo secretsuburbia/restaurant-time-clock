@@ -1,10 +1,12 @@
 const storageKey = "restaurant-time-clock-v1";
+const offlineStorageKey = "restaurant-time-clock-offline-shifts-v1";
 const autoClockStorageKey = "restaurant-time-clock-auto-clock-session";
 const dataFunctionUrl = "/.netlify/functions/time-clock-data";
 const autoClockOutsideGraceMs = 90 * 1000;
 const maxUsefulAccuracyMeters = 250;
 
 let state = loadState();
+let offlineShifts = loadOfflineShifts();
 let selectedEmployeeId = "";
 let deferredInstallPrompt = null;
 let syncTimer = null;
@@ -119,6 +121,42 @@ function saveState() {
   localStorage.setItem(storageKey, JSON.stringify(safeCachedState(state)));
 }
 
+function loadOfflineShifts() {
+  try {
+    const records = JSON.parse(localStorage.getItem(offlineStorageKey) || "[]");
+    return Array.isArray(records) ? records.map(safeOfflineShift).filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
+
+function safeOfflineShift(shift) {
+  if (!shift?.id || !shift?.employeeId || !shift?.clockIn) return null;
+  return {
+    id: String(shift.id),
+    employeeId: String(shift.employeeId),
+    employeeName: String(shift.employeeName || "Unknown"),
+    wageAtClockIn: Number(shift.wageAtClockIn) || 0,
+    clockIn: shift.clockIn,
+    clockOut: shift.clockOut || null,
+    clockOutReason: shift.clockOutReason || "",
+    offlineEvent: shift.offlineEvent || "",
+    breaks: Array.isArray(shift.breaks) ? shift.breaks.map((record) => ({
+      start: record.start,
+      end: record.end || null
+    })).filter((record) => record.start) : [],
+    offline: true
+  };
+}
+
+function saveOfflineShifts() {
+  localStorage.setItem(offlineStorageKey, JSON.stringify(offlineShifts));
+}
+
+function displayShifts() {
+  return [...(state.shifts || []), ...offlineShifts];
+}
+
 function loadAutoClockSession() {
   try {
     const session = JSON.parse(localStorage.getItem(autoClockStorageKey) || "null");
@@ -191,8 +229,10 @@ function displayTime(value) {
 }
 
 function clockOutLabel(shift) {
+  if (shift.offlineEvent) return `${displayTime(shift.clockIn)} (${shift.offlineEvent})`;
   if (!shift.clockOut) return "";
   const label = displayTime(shift.clockOut);
+  if (shift.offline) return `${label} (offline)`;
   return shift.clockOutReason === "auto-left-premises" ? `${label} (auto)` : label;
 }
 
@@ -215,11 +255,11 @@ function getEmployee(id) {
 }
 
 function getOpenShift(employeeId) {
-  return state.shifts.find((shift) => shift.employeeId === employeeId && !shift.clockOut) || (getEmployee(employeeId)?.clockedIn ? { employeeId } : null);
+  return displayShifts().find((shift) => shift.employeeId === employeeId && !shift.clockOut) || (getEmployee(employeeId)?.clockedIn ? { employeeId } : null);
 }
 
 function isEmployeeOnBreak(employeeId) {
-  const openShift = state.shifts.find((shift) => shift.employeeId === employeeId && !shift.clockOut);
+  const openShift = displayShifts().find((shift) => shift.employeeId === employeeId && !shift.clockOut);
   return Boolean(openShift ? activeBreak(openShift) : getEmployee(employeeId)?.onBreak);
 }
 
@@ -228,6 +268,7 @@ function activeBreak(shift) {
 }
 
 function breakHours(shift) {
+  if (shift.offlineEvent) return 0;
   return (shift.breaks || []).reduce((total, record) => {
     if (!record.start) return total;
     const start = new Date(record.start).getTime();
@@ -237,6 +278,7 @@ function breakHours(shift) {
 }
 
 function shiftHours(shift) {
+  if (shift.offlineEvent) return 0;
   const start = new Date(shift.clockIn).getTime();
   const end = shift.clockOut ? new Date(shift.clockOut).getTime() : Date.now();
   const grossHours = Math.max(0, (end - start) / 36e5);
@@ -273,7 +315,7 @@ function render() {
     els.breakAction.textContent = onBreak ? "End break" : "Start break";
     els.breakAction.disabled = !employee || !openShift;
   }
-  els.activeCount.textContent = managerView ? state.shifts.filter((shift) => !shift.clockOut).length : "-";
+  els.activeCount.textContent = managerView ? displayShifts().filter((shift) => !shift.clockOut).length : "-";
   renderAutoClockStatus();
 
   renderToday();
@@ -319,7 +361,7 @@ function renderAutoClockStatus() {
 }
 
 function renderToday() {
-  const rows = state.shifts
+  const rows = displayShifts()
     .filter((shift) => sameDay(shift.clockIn, new Date()))
     .sort((a, b) => new Date(b.clockIn) - new Date(a.clockIn));
 
@@ -328,7 +370,7 @@ function renderToday() {
       const employee = getEmployee(shift.employeeId);
       return `
         <tr>
-          <td>${escapeHtml(employee?.name || shift.employeeName || "Unknown")}</td>
+          <td>${escapeHtml(employee?.name || shift.employeeName || "Unknown")}${shift.offline ? " (offline)" : ""}</td>
           <td>${displayTime(shift.clockIn)}</td>
           <td>${clockOutLabel(shift) || "Working"}</td>
           <td>${displayBreakHours(shift)}</td>
@@ -361,7 +403,7 @@ function renderEmployees() {
 function buildPayrollReport() {
   const from = els.fromDate.value ? new Date(`${els.fromDate.value}T00:00:00`) : startOfToday();
   const to = els.toDate.value ? new Date(`${els.toDate.value}T23:59:59`) : endOfToday();
-  const shifts = state.shifts
+  const shifts = displayShifts()
     .filter((shift) => {
       const clockIn = new Date(shift.clockIn);
       return clockIn >= from && clockIn <= to;
@@ -416,7 +458,14 @@ function renderShiftCorrections(report) {
   if (!els.correctionList) return;
 
   els.correctionList.innerHTML = report.shifts.length
-    ? report.shifts.map((shift) => `
+    ? report.shifts.map((shift) => shift.offline ? `
+      <div class="correction-item" data-shift-id="${escapeHtml(shift.id)}">
+        <div>
+          <strong>${escapeHtml(shift.employeeName || getEmployee(shift.employeeId)?.name || "Unknown")} (offline backup)</strong>
+          <div class="hint">${displayHours(shiftHours(shift))} paid hours, ${displayBreakHours(shift)} break hours. Export CSV to reconcile this record manually.</div>
+        </div>
+      </div>
+    ` : `
       <div class="correction-item" data-shift-id="${escapeHtml(shift.id)}">
         <div>
           <strong>${escapeHtml(shift.employeeName || getEmployee(shift.employeeId)?.name || "Unknown")}</strong>
@@ -454,9 +503,9 @@ function renderPayrollReport(report) {
   const shiftRows = report.shifts.length
     ? report.shifts.map((shift) => `
       <tr>
-        <td>${escapeHtml(shift.employeeName || getEmployee(shift.employeeId)?.name || "Unknown")}</td>
+        <td>${escapeHtml(shift.employeeName || getEmployee(shift.employeeId)?.name || "Unknown")}${shift.offline ? " (offline backup)" : ""}</td>
         <td>${new Date(shift.clockIn).toLocaleString()}</td>
-        <td>${shift.clockOut ? `${new Date(shift.clockOut).toLocaleString()}${shift.clockOutReason === "auto-left-premises" ? " (auto)" : ""}` : "Still working"}</td>
+        <td>${shift.clockOut ? `${new Date(shift.clockOut).toLocaleString()}${shift.clockOutReason === "auto-left-premises" ? " (auto)" : shift.offline ? " (offline)" : ""}` : "Still working"}</td>
         <td>${displayBreakHours(shift)}</td>
         <td>${displayHours(shiftHours(shift))}</td>
       </tr>
@@ -511,11 +560,17 @@ async function clockAction() {
   setMessage("Checking PIN...", "ok");
 
   if (!canUseCloudData()) {
-    setMessage("Shared records are only available on the live Netlify app.", "error");
+    offlineClockAction(employee);
     return;
   }
 
-  const willClockIn = !getOpenShift(employee.id);
+  const currentOpenShift = getOpenShift(employee.id);
+  if (currentOpenShift?.offline) {
+    offlineClockAction(employee);
+    return;
+  }
+
+  const willClockIn = !currentOpenShift;
   if (willClockIn && geofenceConfigured()) {
     if (!("geolocation" in navigator)) {
       setMessage("Location is required to clock in. Use a phone/browser with location access.", "error");
@@ -537,6 +592,10 @@ async function clockAction() {
   });
 
   if (!result?.state || !result?.event) {
+    if (result?.error === "The shared service could not be reached" || Number(result?.status) >= 500) {
+      offlineClockAction(employee);
+      return;
+    }
     setMessage(result?.error || "Clock action failed. Please check the PIN and try again.", "error");
     return;
   }
@@ -565,6 +624,55 @@ async function clockAction() {
   setMessage(`${result.event.employeeName} ${result.event.action} at ${displayTime(result.event.time)}.${textStatus}`, result.event.textSent ? "ok" : "error");
 }
 
+function offlineClockAction(employee) {
+  const now = new Date().toISOString();
+  let openShift = offlineShifts.find((shift) => shift.employeeId === employee.id && !shift.clockOut);
+  let actionText = openShift || employee.clockedIn ? "clocked out offline" : "clocked in offline";
+
+  if (openShift) {
+    const currentBreak = activeBreak(openShift);
+    if (currentBreak) currentBreak.end = now;
+    openShift.clockOut = now;
+    openShift.clockOutReason = "offline";
+  } else if (employee.clockedIn) {
+    offlineShifts.push(createOfflineEvent(employee, "clocked out offline", now));
+  } else {
+    openShift = {
+      id: `offline-${newId()}`,
+      employeeId: employee.id,
+      employeeName: employee.name,
+      wageAtClockIn: Number(employee.wage) || 0,
+      clockIn: now,
+      clockOut: null,
+      clockOutReason: "",
+      breaks: [],
+      offline: true
+    };
+    offlineShifts.push(openShift);
+  }
+
+  selectedEmployeeId = employee.id;
+  els.employeePin.value = "";
+  saveOfflineShifts();
+  render();
+  setMessage(`${employee.name} ${actionText} at ${displayTime(now)}. Saved on this device only; text alerts and cloud sync are unavailable while offline.`, "error");
+}
+
+function createOfflineEvent(employee, label, time) {
+  return {
+    id: `offline-event-${newId()}`,
+    employeeId: employee.id,
+    employeeName: employee.name,
+    wageAtClockIn: 0,
+    clockIn: time,
+    clockOut: time,
+    clockOutReason: "offline-event",
+    offlineEvent: label,
+    breaks: [],
+    offline: true
+  };
+}
+
 async function breakAction() {
   await loadSharedState();
 
@@ -573,7 +681,8 @@ async function breakAction() {
     setMessage("Add an employee first.", "error");
     return;
   }
-  if (!getOpenShift(employee.id)) {
+  const currentOpenShift = getOpenShift(employee.id);
+  if (!currentOpenShift) {
     setMessage("Clock in before starting a break.", "error");
     return;
   }
@@ -581,8 +690,8 @@ async function breakAction() {
     setMessage("Enter your PIN first.", "error");
     return;
   }
-  if (!canUseCloudData()) {
-    setMessage("Shared records are only available on the live Netlify app.", "error");
+  if (currentOpenShift.offline || !canUseCloudData()) {
+    offlineBreakAction(employee);
     return;
   }
 
@@ -594,6 +703,10 @@ async function breakAction() {
   });
 
   if (!result?.state || !result?.event) {
+    if (result?.error === "The shared service could not be reached" || Number(result?.status) >= 500) {
+      offlineBreakAction(employee);
+      return;
+    }
     setMessage(result?.error || "Break action failed. Please check the PIN and try again.", "error");
     return;
   }
@@ -606,6 +719,43 @@ async function breakAction() {
 
   const textStatus = result.event.textSent ? " Text sent." : result.event.textError ? ` Text alert failed. ${result.event.textError}.` : "";
   setMessage(`${result.event.employeeName} ${result.event.action} at ${displayTime(result.event.time)}.${textStatus}`, result.event.textSent ? "ok" : "error");
+}
+
+function offlineBreakAction(employee) {
+  const openShift = offlineShifts.find((shift) => shift.employeeId === employee.id && !shift.clockOut);
+  if (!openShift) {
+    if (employee.clockedIn) {
+      const now = new Date().toISOString();
+      const actionText = employee.onBreak ? "ended break offline" : "started break offline";
+      offlineShifts.push(createOfflineEvent(employee, actionText, now));
+      selectedEmployeeId = employee.id;
+      els.employeePin.value = "";
+      saveOfflineShifts();
+      render();
+      setMessage(`${employee.name} ${actionText} at ${displayTime(now)}. Saved on this device only for manager reconciliation.`, "error");
+      return;
+    }
+
+    setMessage("This device can only record an offline break after the employee clocks in offline or is shown as clocked in.", "error");
+    return;
+  }
+
+  openShift.breaks ||= [];
+  const now = new Date().toISOString();
+  const currentBreak = activeBreak(openShift);
+  const actionText = currentBreak ? "ended break offline" : "started break offline";
+
+  if (currentBreak) {
+    currentBreak.end = now;
+  } else {
+    openShift.breaks.push({ start: now, end: null });
+  }
+
+  selectedEmployeeId = employee.id;
+  els.employeePin.value = "";
+  saveOfflineShifts();
+  render();
+  setMessage(`${employee.name} ${actionText} at ${displayTime(now)}. Saved on this device only; text alerts and cloud sync are unavailable while offline.`, "error");
 }
 
 function confirmLocationPermission() {
@@ -873,11 +1023,12 @@ async function saveEmployee(event) {
 }
 
 function exportCsv(shifts, fileName) {
-  const header = ["Employee", "Clock In", "Clock Out", "Break Hours", "Paid Hours", "Wage", "Pay"];
+  const header = ["Employee", "Source", "Clock In", "Clock Out", "Break Hours", "Paid Hours", "Wage", "Pay"];
   const rows = shifts.map((shift) => {
     const employee = getEmployee(shift.employeeId);
     return [
       employee?.name || shift.employeeName || "Unknown",
+      shift.offline ? "Offline backup on this device" : "Shared records",
       new Date(shift.clockIn).toLocaleString(),
       shift.clockOut ? new Date(shift.clockOut).toLocaleString() : "",
       displayBreakHours(shift),
@@ -952,8 +1103,9 @@ function buildPayrollEmail(report) {
     report.shifts.forEach((shift) => {
       const name = shift.employeeName || getEmployee(shift.employeeId)?.name || "Unknown";
       const clockIn = new Date(shift.clockIn).toLocaleString();
-      const clockOut = shift.clockOut ? `${new Date(shift.clockOut).toLocaleString()}${shift.clockOutReason === "auto-left-premises" ? " (auto)" : ""}` : "Still working";
-      lines.push(`${name}: ${clockIn} to ${clockOut}, ${displayBreakHours(shift)} break hours, ${displayHours(shiftHours(shift))} paid hours`);
+      const clockOut = shift.clockOut ? `${new Date(shift.clockOut).toLocaleString()}${shift.clockOutReason === "auto-left-premises" ? " (auto)" : shift.offline ? " (offline)" : ""}` : "Still working";
+      const source = shift.offline ? "offline backup on this device" : "shared records";
+      lines.push(`${name} (${source}): ${clockIn} to ${clockOut}, ${displayBreakHours(shift)} break hours, ${displayHours(shiftHours(shift))} paid hours`);
     });
   } else {
     lines.push("No shift details in this date range.");
@@ -965,7 +1117,7 @@ function buildPayrollEmail(report) {
 function shiftsInRange(fromDate, toDate) {
   const from = new Date(`${fromDate}T00:00:00`);
   const to = new Date(`${toDate}T23:59:59`);
-  return state.shifts.filter((shift) => {
+  return displayShifts().filter((shift) => {
     const clockIn = new Date(shift.clockIn);
     return clockIn >= from && clockIn <= to;
   });
